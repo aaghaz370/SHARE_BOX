@@ -89,8 +89,6 @@ class Database:
         
         user_data = {
             "user_id": user_id,
-            "username": username,
-            "first_name": first_name,
             "is_premium": False,
             "premium_expiry": None,
             "subscription_tier": "free",
@@ -98,7 +96,6 @@ class Database:
             "referral_code": referral_code,
             "referred_by": None,
             "joined_at": datetime.now(pytz.UTC),
-            "last_seen": datetime.now(pytz.UTC),
             "is_blocked": False,
             "total_links": 0,
             "total_downloads": 0,
