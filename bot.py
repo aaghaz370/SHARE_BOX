@@ -210,7 +210,8 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.effective_message.reply_text(
                 "❌ **An error occurred!**\n\n"
                 "Please try again or contact admin if problem persists.\n\n"
-                f"Error type: `{type(context.error).__name__}`",
+                f"Error: `{str(context.error)}`\n"
+                f"Type: `{type(context.error).__name__}`",
                 parse_mode="Markdown"
             )
         except:
