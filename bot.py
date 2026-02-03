@@ -7,7 +7,7 @@ import logging
 import asyncio
 from datetime import datetime
 from threading import Thread
-from flask import Flask, jsonify
+from flask import Flask, jsonify, redirect
 from telegram import Update, BotCommand
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
@@ -195,6 +195,13 @@ def stats_endpoint():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route('/share/<link_id>')
+def share_redirect(link_id):
+    """Redirect to Telegram bot"""
+    bot_username = config.BOT_USERNAME.replace("@", "")
+    telegram_url = f"https://t.me/{bot_username}?start={link_id}"
+    return redirect(telegram_url)
+
 def run_flask():
     """Run Flask  server in background"""
     app.run(host='0.0.0.0', port=config.PORT, debug=False)
@@ -221,6 +228,14 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def setup_bot_commands(application):
     """Setup bot command menu"""
+    # Auto-detect username for accurate links
+    try:
+        bot_info = await application.bot.get_me()
+        config.BOT_USERNAME = f"@{bot_info.username}"
+        logger.info(f"✅ Bot Username Auto-detected: {config.BOT_USERNAME}")
+    except Exception as e:
+        logger.warning(f"⚠️ Could not detect bot username: {e}")
+
     logger.info("⚙️  Setting up bot commands...")
     
     # User commands (shown to everyone)

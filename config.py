@@ -36,7 +36,7 @@ STORAGE_CHANNELS = [
 
 # ===== SERVER =====
 PORT = int(os.getenv("PORT", "10000"))
-WEBHOOK_URL = os.getenv("WEBHOOK_URL", "")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL") or os.getenv("RENDER_EXTERNAL_URL", "")
 
 # ===== FEATURE FLAGS =====
 ENABLE_PREMIUM_FEATURES = os.getenv("ENABLE_PREMIUM_FEATURES", "true").lower() == "true"

@@ -249,6 +249,13 @@ def calculate_total_size(files: List[dict]) -> int:
 
 def generate_bot_link(link_id: str) -> str:
     """Generate shareable bot link"""
+    # Use Web Redirect if available (Future Proof)
+    if config.WEBHOOK_URL:
+        # Ensure no trailing slash
+        base_url = config.WEBHOOK_URL.rstrip("/")
+        return f"{base_url}/share/{link_id}"
+        
+    # Fallback to direct telegram link
     bot_username = config.BOT_USERNAME.replace("@", "")
     return f"https://t.me/{bot_username}?start={link_id}"
 
