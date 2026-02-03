@@ -145,6 +145,10 @@ class Database:
         if not expiry:
             return True  # Lifetime premium
         
+        # Ensure timezone aware
+        if expiry.tzinfo is None:
+            expiry = expiry.replace(tzinfo=pytz.UTC)
+        
         return datetime.now(pytz.UTC) < expiry
     
     def grant_premium(self, user_id: int, duration_days: int = None) -> bool:
@@ -313,7 +317,11 @@ class Database:
         
         # Check if expired
         if link and link.get("expires_at"):
-            if datetime.now(pytz.UTC) > link["expires_at"]:
+            expires_at = link["expires_at"]
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=pytz.UTC)
+                
+            if datetime.now(pytz.UTC) > expires_at:
                 self.delete_link(link_id)
                 return None
         
