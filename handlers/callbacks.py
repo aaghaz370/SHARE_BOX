@@ -3,8 +3,9 @@ Share-box by Univora - Callback Query Handlers
 Handle inline button callbacks
 """
 
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
+from datetime import datetime
 import config
 from database import db
 from handlers.user import (
@@ -12,7 +13,7 @@ from handlers.user import (
     settings_command, referral_command, upgrade_command
 )
 from handlers.admin import (
-    upload_command, mylinks_command, generate_link_category_callback
+    upload_command, mylinks_command
 )
 
 # ==================== CALLBACK HANDLERS ====================
@@ -119,7 +120,6 @@ async def generate_link_category_callback(update: Update, context: ContextTypes.
     
     if link_id:
         from utils.helpers import generate_bot_link, calculate_total_size, format_file_size, format_expiry_date
-        from datetime import datetime
         
         bot_link = generate_bot_link(link_id)
         total_size = calculate_total_size(files)
@@ -134,8 +134,6 @@ async def generate_link_category_callback(update: Update, context: ContextTypes.
             created_at=datetime.now().strftime('%d %b %Y, %H:%M'),
             expires_at=format_expiry_date(link.get('expires_at'))
         )
-        
-        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
         
         keyboard = [
             [
