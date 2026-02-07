@@ -1,4 +1,10 @@
 
+from telegram import Update
+from telegram.ext import ContextTypes
+import config
+from database import db
+from utils.helpers import user_check, premium_only, generate_bot_link, truncate_text
+
 # ==================== ADVANCED PREMIUM COMMANDS ====================
 
 @user_check

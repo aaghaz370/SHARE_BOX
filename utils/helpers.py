@@ -13,6 +13,7 @@ from typing import Optional, List
 import pytz
 import config
 from database import db
+import asyncio
 
 # ==================== DECORATORS ====================
 
@@ -40,12 +41,11 @@ def user_check(func):
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
         user = update.effective_user
         
-        # Create or update user
-        user_data = db.create_user(
-            user_id=user.id,
-            username=user.username,
-            first_name=user.first_name
-        )
+        if not user:
+            return await func(update, context, *args, **kwargs)
+            
+        # Create/Update user in DB (Async)
+        user_data = await asyncio.to_thread(db.create_user, user.id, user.username, user.first_name)
         
         # Check if blocked
         if user_data and user_data.get("is_blocked", False):
@@ -99,8 +99,9 @@ async def update_user_menu(bot, user_id):
         BotCommand("start", "🏠 Start"),
         BotCommand("upload", "📤 Upload"),
         BotCommand("stop", "🛑 Stop"),
-        BotCommand("checklink", "🔎 Check"),
-        BotCommand("mylinks", "🔗 Links"),
+        BotCommand("checklink", "🔎 Check Link"),
+        BotCommand("import", "📥 Import Channel"),
+        BotCommand("mylinks", "🔗 My Links"),
         BotCommand("stats", "📊 Stats"),
         BotCommand("upgrade", "💎 Premium"),
         BotCommand("help", "❓ Help"),

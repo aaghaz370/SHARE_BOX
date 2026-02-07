@@ -109,7 +109,7 @@ async def show_edit_panel(update: Update, context: ContextTypes.DEFAULT_TYPE, li
         await update.message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
 
 # Callback Handlers
-async def handle_edit_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def edit_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     data = query.data
     

@@ -30,12 +30,14 @@ from handlers.admin import (
     cancel_command, mylinks_command, delete_link_command,
     linkinfo_command, add_files_command, qrcode_command,
     ban_command, unban_command, admin_stats_command,
-    grant_premium_command, broadcast_command, handle_dynamic_qr,
-    setpassword_command, setname_command, protect_command, search_command,
-    set_plan_command
+    grant_premium_command, broadcast_command, handle_dynamic_qr
+)
+from handlers.premium import (
+    setpassword_command, setname_command, protect_command, search_command
 )
 from handlers.callbacks import handle_callback_query
-from handlers.edit_panel import edit_panel_command
+from handlers.edit_panel import edit_panel_command, edit_panel_callback
+from handlers.importer import import_command
 
 # Configure logging
 logging.basicConfig(
@@ -307,6 +309,7 @@ def main():
     application.add_handler(CommandHandler("skip", skip_command))
     application.add_handler(CommandHandler("stop", stop_command))
     application.add_handler(CommandHandler("checklink", checklink_command))
+    application.add_handler(CommandHandler("import", import_command))
     
     # Upload/Link management commands
     application.add_handler(CommandHandler("upload", upload_command))

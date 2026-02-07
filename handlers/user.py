@@ -313,6 +313,12 @@ async def detect_and_handle_link(update: Update, context: ContextTypes.DEFAULT_T
     text = update.message.text
     user_id = update.effective_user.id
     
+    # 0. Check Import Step
+    if context.user_data.get('import_step') == 'CHANNEL':
+        from handlers.importer import handle_import_channel_input
+        await handle_import_channel_input(update, context)
+        return
+    
     # 1. Check for Link Naming (Priority)
     if context.user_data.get('awaiting_link_name'):
         name = text.strip()

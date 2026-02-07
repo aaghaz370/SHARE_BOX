@@ -61,6 +61,10 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
          await show_edit_selection_menu(update, context, page)
          
     # Settings Handler
+    elif data.startswith("imp_"):
+        from handlers.importer import handle_import_callback
+        await handle_import_callback(update, context)
+        
     elif data.startswith("set_"):
         await handle_settings_callback(update, context)
          
@@ -250,8 +254,8 @@ Are you sure you want to delete this link?
             
     # Edit Panel
     elif data.startswith("edit_") or data.startswith("p_protect_toggle_"):
-        from handlers.edit_panel import handle_edit_callbacks
-        await handle_edit_callbacks(update, context)
+        from handlers.edit_panel import edit_panel_callback
+        await edit_panel_callback(update, context)
     
     # Pagination
     elif data.startswith("links_page_"):
