@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ShareBox Dashboard</title>
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <!-- Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+
+<body class="dark-theme">
+    <div class="app-container">
+
+        <!-- Sidebar (Desktop) -->
+        <nav class="sidebar">
+            <div class="logo">
+                <i class="fa-solid fa-box-open"></i> ShareBox
+            </div>
+            <ul class="menu">
+                <li class="active" onclick="filterCategory('all')"><a href="#"><i class="fa-solid fa-layer-group"></i>
+                        All Links</a></li>
+                <li onclick="filterCategory('Favorites')"><a href="#"><i class="fa-solid fa-star"></i> Favorites</a>
+                </li>
+                <li onclick="alert('Use Telegram Bot for Settings')"><a href="#"><i class="fa-solid fa-gear"></i>
+                        Settings</a></li>
+                <li class="logout"><a href="javascript:window.close()"><i class="fa-solid fa-right-from-bracket"></i>
+                        Close</a></li>
+            </ul>
+
+            <div class="sidebar-footer">
+                <p>v1.2.0 • Premium</p>
+            </div>
+        </nav>
+
+        <!-- Main Content -->
+        <main class="content">
+            <!-- Mobile Header -->
+            <header class="top-bar">
+                <div class="brand-area">
+                    <i class="fa-solid fa-box-open logo-icon"></i>
+                    <h1 class="mobile-title">ShareBox</h1>
+                </div>
+
+                <div class="search-container">
+                    <i class="fa-solid fa-search search-icon"></i>
+                    <input type="text" id="search-input" placeholder="Search files, links..." onkeyup="applyFilters()">
+                </div>
+
+                <div class="user-profile">
+                    <div class="user-info-text">
+                        <h3 id="username">Loading...</h3>
+                        <span id="plan-badge" class="badge">...</span>
+                    </div>
+                    <div class="avatar">
+                        <i class="fa-solid fa-user"></i>
+                    </div>
+                </div>
+            </header>
+
+            <!-- Stats Overview -->
+            <section class="stats-grid">
+                <div class="stat-card glass gradient-1">
+                    <div class="icon"><i class="fa-solid fa-link"></i></div>
+                    <div class="info">
+                        <h3>Total Links</h3>
+                        <p id="total-links">0</p>
+                    </div>
+                    <div class="decor-circle"></div>
+                </div>
+                <div class="stat-card glass gradient-2">
+                    <div class="icon"><i class="fa-solid fa-eye"></i></div>
+                    <div class="info">
+                        <h3>Total Views</h3>
+                        <p id="total-views">0</p>
+                    </div>
+                    <div class="decor-circle"></div>
+                </div>
+                <!-- 
+                <div class="stat-card glass gradient-3">
+                    <div class="icon"><i class="fa-solid fa-database"></i></div>
+                    <div class="info">
+                        <h3>Storage</h3>
+                        <p id="total-files">0 Files</p>
+                    </div>
+                    <div class="decor-circle"></div>
+                </div>
+                -->
+            </section>
+
+            <!-- Controls & Links -->
+            <section class="links-section">
+                <div class="controls-bar glass">
+                    <div class="control-group">
+                        <label><i class="fa-solid fa-sort"></i> Sort By</label>
+                        <select id="sort-select" onchange="applyFilters()">
+                            <option value="date-desc">Newest First</option>
+                            <option value="date-asc">Oldest First</option>
+                            <option value="name-asc">A to Z</option>
+                            <option value="name-desc">Z to A</option>
+                            <option value="views-desc">Most Views</option>
+                        </select>
+                    </div>
+
+                    <div class="control-group">
+                        <label><i class="fa-solid fa-filter"></i> Category</label>
+                        <select id="category-select" onchange="applyFilters()">
+                            <option value="all">All Categories</option>
+                        </select>
+                    </div>
+
+                    <div class="refresh-btn" onclick="fetchLinks()">
+                        <i class="fa-solid fa-rotate"></i>
+                    </div>
+                </div>
+
+                <h2 class="section-title">Your Collection</h2>
+
+                <div id="links-grid" class="links-grid">
+                    <div class="skeleton-card"></div>
+                    <div class="skeleton-card"></div>
+                    <div class="skeleton-card"></div>
+                </div>
+            </section>
+        </main>
+
+        <!-- Mobile Bottom Nav -->
+        <nav class="mobile-nav">
+            <a href="#" class="active"><i class="fa-solid fa-home"></i></a>
+            <a href="#" onclick="document.getElementById('search-input').focus()"><i class="fa-solid fa-search"></i></a>
+            <a href="#" onclick="fetchLinks()"><i class="fa-solid fa-rotate"></i></a>
+            <a href="#" onclick="window.close()"><i class="fa-solid fa-user"></i></a>
+        </nav>
+    </div>
+
+    <!-- Toast Notification -->
+    <div id="toast" class="toast">
+        <i class="fa-solid fa-check-circle"></i> <span>Link Copied!</span>
+    </div>
+
+    <script src="/static/js/app.js"></script>
+</body>
+
+</html>

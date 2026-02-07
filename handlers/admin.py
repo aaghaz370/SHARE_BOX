@@ -477,6 +477,14 @@ async def mylinks_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Bottom menu
     keyboard.append([InlineKeyboardButton("🏠 Main Menu", callback_data="menu_start")])
     
+    # Dashboard Button
+    dashboard_base = config.WEBHOOK_URL if config.WEBHOOK_URL else f"http://127.0.0.1:{config.PORT}"
+    # Remove trailing slash if present
+    dashboard_base = dashboard_base.rstrip('/')
+    dashboard_url = f"{dashboard_base}/dashboard?u={user_id}"
+    
+    keyboard.append([InlineKeyboardButton("🌐 Open Dashboard", url=dashboard_url)])
+    
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     # Handle both command and callback query

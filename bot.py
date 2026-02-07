@@ -7,7 +7,7 @@ import logging
 import asyncio
 from datetime import datetime
 from threading import Thread
-from flask import Flask, jsonify, redirect
+from flask import Flask, jsonify, redirect, render_template, request
 from telegram import Update, BotCommand
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
@@ -53,163 +53,111 @@ app = Flask(__name__)
 @app.route('/')
 def home():
     """Home page"""
-    return f"""
+    return render_template('dashboard.html') if request.args.get('u') else """
     <!DOCTYPE html>
     <html>
     <head>
-        <title>{config.BOT_NAME}</title>
+        <title>Share Box Bot</title>
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
- <style>
-            body {{
-                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                color: white;
-                text-align: center;
-                padding: 50px 20px;
-                margin: 0;
-            }}
-            .container {{
-                max-width: 600px;
-                margin: 0 auto;
-                background: rgba(255, 255, 255, 0.1);
-                padding: 40px;
-                border-radius: 20px;
-                box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.37);
-                backdrop-filter: blur(4px);
-                border: 1px solid rgba(255, 255, 255, 0.18);
-            }}
-            h1 {{ font-size: 3em; margin: 0; }}
-            .status {{ color: #4ade80; font-size: 1.5em; margin: 20px 0; }}
-            .features {{ text-align: left; margin: 30px 0; }}
-            .feature {{ margin: 15px 0; padding: 10px; background: rgba(255,255,255,0.1); border-radius: 10px; }}
-            .btn {{
-                display: inline-block;
-                padding: 15px 30px;
-                background: white;
-                color: #667eea;
-                text-decoration: none;
-                border-radius: 10px;
-                font-weight: bold;
-                margin: 10px;
-                transition: transform 0.3s;
-            }}
-            .btn:hover {{ transform: scale(1.05); }}
-            .stats {{
-                display: grid;
-                grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-                gap: 15px;
-                margin: 30px 0;
-            }}
-            .stat {{
-                background: rgba(255,255,255,0.2);
-                padding: 20px;
-                border-radius: 10px;
-            }}
-            .stat-value {{ font-size: 2em; font-weight: bold; }}
-            .stat-label {{ font-size: 0.9em; opacity: 0.9; }}
+        <style>
+            body { font-family: sans-serif; background: #0f1115; color: white; text-align: center; padding: 50px; }
+            .container { max-width: 600px; margin: 0 auto; }
+            h1 { color: #6366f1; }
+            .btn { display: inline-block; padding: 10px 20px; background: #6366f1; color: white; text-decoration: none; border-radius: 5px; margin-top: 20px; }
         </style>
     </head>
     <body>
         <div class="container">
-            <h1>📦 {config.BOT_NAME}</h1>
-            <div class="status">✅ Bot is Running!</div>
-            
-            <p style="font-size: 1.2em; margin: 20px 0;">
-                Share files securely with advanced features!
-            </p>
-            
-            <div class="stats">
-                <div class="stat">
-                    <div class="stat-value">FREE</div>
-                    <div class="stat-label">20 Files/Link</div>
-                </div>
-                <div class="stat">
-                    <div class="stat-value">💎</div>
-                    <div class="stat-label">Premium Available</div>
-                </div>
-                <div class="stat">
-                    <div class="stat-value">24/7</div>
-                    <div class="stat-label">Always Online</div>
-                </div>
-            </div>
-            
-            <div class="features">
-                <div class="feature">📤 Upload files & create shareable links</div>
-                <div class="feature">🔒 Password protection (Premium)</div>
-                <div class="feature">📊 Advanced analytics & statistics</div>
-                <div class="feature">📥 QR code generation (Premium)</div>
-                <div class="feature">♾️ Unlimited storage (Premium)</div>
-                <div class="feature">🔄 Triple backup redundancy</div>
-            </div>
-            
-            <a href="https://t.me/{config.BOT_USERNAME.replace('@', '')}" class="btn">
-                🚀 Start Bot
-            </a>
-            <a href="/health" class="btn">
-                💚 Health Check
-            </a>
-            
-            <p style="margin-top: 40px; font-size: 0.9em; opacity: 0.8;">
-                Made with ❤️ by {config.BRAND_NAME}<br>
-                Version 1.0.0 | © 2026
-            </p>
+            <h1>📦 Share Box Bot</h1>
+            <p>Advanced File Sharing & Management</p>
+            <p>✅ Bot is Running 24/7</p>
+            <a href="https://t.me/SHAREBOXBOT" class="btn">Open Bot</a>
         </div>
     </body>
     </html>
     """
 
-@app.route('/health')
-def health():
-    """Health check endpoint"""
-    try:
-        # Check database connection
-        stats = db.get_global_stats()
-        
-        return jsonify({
-            "status": "healthy",
-            "bot": config.BOT_NAME,
-            "uptime": "24/7",
-            "database": "connected",
-            "timestamp": datetime.now().isoformat(),
-            "stats": {
-                "total_users": stats.get('total_users', 0),
-                "total_links": stats.get('total_links', 0),
-                "total_files": stats.get('total_files', 0)
-            }
-        }), 200
-    except Exception as e:
-        return jsonify({
-            "status": "unhealthy",
-            "error": str(e),
-            "timestamp": datetime.now().isoformat()
-        }), 500
+@app.route('/dashboard')
+def dashboard():
+    """User Dashboard"""
+    user_id = request.args.get('u')
+    if not user_id:
+        return "⚠️ Access Denied: Please open this link from the Telegram Bot."
+    return render_template('dashboard.html')
 
-@app.route('/stats')
-def stats_endpoint():
-    """Public stats endpoint"""
+@app.route('/api/links')
+def api_get_links():
     try:
-        stats = db.get_global_stats()
+        user_id = request.args.get('u')
+        if not user_id: return jsonify({"error": "Missing User ID"}), 400
         
-        return jsonify({
-            "bot_name": config.BOT_NAME,
-            "total_users": stats.get('total_users', 0),
-            "premium_users": stats.get('premium_users', 0),
-            "total_links": stats.get('total_links', 0),
-            "total_downloads": stats.get('total_downloads', 0),
-            "timestamp": datetime.now().isoformat()
-        }), 200
+        user_id = int(user_id)
+        # Query for both user_id (legacy/imported) and admin_id (standard)
+        query = {"$or": [{"user_id": user_id}, {"admin_id": user_id}]}
+        
+        links_cursor = db.links.find(query).sort("created_at", -1)
+        links = []
+        
+        for link in links_cursor:
+            # Serialization
+            link_obj = {
+                "link_id": link.get("link_id"),
+                "name": link.get("name") or link.get("link_name", "Untitled"), # Handle both field names
+                "views": link.get("views", 0),
+                "downloads": link.get("downloads", 0),
+                "created_at": link.get("created_at").isoformat() if link.get("created_at") else None,
+                "file_count": len(link.get("files", [])),
+                "category": link.get("category", "Uncategorized")
+            }
+            links.append(link_obj)
+            
+        return jsonify({"links": links})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route('/api/stats')
+def api_get_user_stats():
+    try:
+        user_id = request.args.get('u')
+        if not user_id: return jsonify({"error": "Missing User ID"}), 400
+        
+        user_id = int(user_id)
+        user = db.get_user(user_id) or {}
+        
+        # Aggregation
+        query = {"$or": [{"user_id": user_id}, {"admin_id": user_id}]}
+        pipeline = [
+            {"$match": query},
+            {"$group": {"_id": None, "total_views": {"$sum": "$views"}}}
+        ]
+        res = list(db.links.aggregate(pipeline))
+        total_views = res[0]['total_views'] if res else 0
+        total_links = db.links.count_documents(query)
+        
+        plan = db.get_plan_details(user_id)
+        
+        stats = {
+            "username": user.get('first_name', 'User'),
+            "plan": plan.get('name', 'Free').upper(),
+            "total_links": total_links,
+            "total_views": total_views,
+            "joined_at": user.get('joined_at').isoformat() if user.get('joined_at') else None,
+            "bot_username": config.BOT_USERNAME.replace('@', '') # Pass this for frontend
+        }
+        return jsonify(stats)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/health')
+def health():
+    return jsonify({"status": "ok", "bot": config.BOT_NAME}), 200
+
 @app.route('/share/<link_id>')
 def share_redirect(link_id):
-    """Redirect to Telegram bot"""
-    bot_username = config.BOT_USERNAME.replace("@", "")
-    telegram_url = f"https://t.me/{bot_username}?start={link_id}"
-    return redirect(telegram_url)
+    return redirect(f"https://t.me/{config.BOT_USERNAME.replace('@', '')}?start={link_id}")
 
 def run_flask():
-    """Run Flask  server in background"""
+    """Run Flask server in background"""
     app.run(host='0.0.0.0', port=config.PORT, debug=False)
 
 # ==================== BOT ERROR HANDLER ====================

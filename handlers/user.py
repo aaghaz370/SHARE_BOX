@@ -297,7 +297,7 @@ async def send_files_async(context: ContextTypes.DEFAULT_TYPE, chat_id: int, use
              f"💾 Please save them immediately!\n\n"
              f"━━━━━━━━━━━━━━━━━━━━━\n\n"
              f"Powered by Share Box\n"
-             f"Create your own links: @SHARE_BOX_BOT",
+             f"Create your own links using this bot",
         parse_mode="Markdown"
     )
     
@@ -317,6 +317,11 @@ async def detect_and_handle_link(update: Update, context: ContextTypes.DEFAULT_T
     if context.user_data.get('import_step') == 'CHANNEL':
         from handlers.importer import handle_import_channel_input
         await handle_import_channel_input(update, context)
+        return
+        
+    if context.user_data.get('import_step') == 'LIMIT_INPUT':
+        from handlers.importer import handle_import_limit_input
+        await handle_import_limit_input(update, context)
         return
     
     # 1. Check for Link Naming (Priority)

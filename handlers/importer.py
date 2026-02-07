@@ -1,7 +1,8 @@
 import asyncio
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from telegram.ext import ContextTypes
 from telegram.error import TelegramError
+from telegram.helpers import escape_markdown
 import config
 from database import db
 from utils.helpers import user_check, format_file_size
@@ -35,16 +36,73 @@ async def import_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_import_channel_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle text input for channel"""
-    text = update.message.text.strip()
-    user_id = update.effective_user.id
+    raw_text = update.message.text.strip()
+    text = raw_text # Working copy
     
+    # Logic to handle Links (t.me/xyz)
+    if "t.me/" in text or "telegram.me/" in text:
+        # 1. Private Channel Post Link (t.me/c/123456789/100)
+        if "/c/" in text:
+            try:
+                # Extract ID part
+                parts = text.split("/c/")[1].split("/")
+                if parts[0].isdigit():
+                    # Telegram Private Channels use -100 prefix
+                    text = int(f"-100{parts[0]}")
+                    
+                # Extract Message ID (Start Point)
+                if len(parts) > 1 and parts[1].isdigit():
+                    context.user_data['import_start_msg_id'] = int(parts[1])
+            except:
+                pass # Failed to parse, try original
+        
+        # 2. Invite Links (Cannot be used directly)
+        elif "/+" in text or "joinchat" in text:
+             await update.message.reply_text(
+                 "❌ **Private Invite Link Detected**\n\n"
+                 "I cannot use invite links. Please send a **Post Link** from the channel instead (e.g. `t.me/c/1234/56`).\n\n"
+                 "Or send the **Channel ID** directly (`-100xxxx`).",
+                 parse_mode="Markdown"
+             )
+             return
+             
+        # 3. Public Links (t.me/username/123)
+        else:
+            try:
+                parts = text.rstrip("/").split("/")
+                # Check for MsgID (last part digits)
+                if parts[-1].isdigit():
+                    context.user_data['import_start_msg_id'] = int(parts.pop())
+                    
+                username = parts[-1].split("?")[0]
+                if not username.startswith("@") and not username.startswith("-"):
+                     text = f"@{username}"
+            except: pass
+            
+    # Try integer conversion if it looks like ID (manual input)
+    try:
+        if isinstance(text, str):
+            chat_id = int(text)
+            text = chat_id
+    except ValueError:
+        pass
+
     try:
         # Check permissions
         chat = await context.bot.get_chat(text)
-        member = await chat.get_member(context.bot.id)
         
-        if member.status not in ['administrator', 'creator']:
-            await update.message.reply_text("❌ **Error:** I must be an Admin in that channel to import files!")
+        # Verify Bot is Admin
+        try:
+            member = await chat.get_member(context.bot.id)
+            if member.status not in ['administrator', 'creator']:
+                await update.message.reply_text("❌ **Error:** I am NOT an Admin in that channel!\n\nPlease promote me to Admin with 'Post Messages' permission.")
+                return
+        except Exception as e:
+            # If bot is not in chat (and it's private), get_member fails.
+            if "/c/" in str(update.message.text):
+                await update.message.reply_text("❌ **Access Denied:** I am not in that private channel.\n\nPlease add me as **Admin** first, then try again.")
+                return
+            await update.message.reply_text(f"❌ **Access Error:** Cannot verify admin status.\nReason: {e}")
             return
             
         # Save chat info
@@ -56,7 +114,14 @@ async def handle_import_channel_input(update: Update, context: ContextTypes.DEFA
         await show_filter_menu(update, context)
         
     except Exception as e:
-        await update.message.reply_text(f"❌ **Error:** Cannot access channel.\n`{str(e)}`")
+        await update.message.reply_text(
+            f"❌ **Error:** Cannot access channel.\n`{str(e)}`\n\n"
+            "**Possible Reasons:**\n"
+            "1. Bot is not Admin in the channel.\n"
+            "2. Link format is invalid.\n"
+            "3. If Private, use a Post Link (t.me/c/...) or ID.",
+            parse_mode="Markdown"
+        )
 
 async def show_filter_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Display filter selection menu"""
@@ -83,12 +148,14 @@ async def show_filter_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     
+    safe_title = escape_markdown(context.user_data.get('import_source_title', 'Unknown'), version=1)
+    
     text = (
         "🔍 **Select Content Type**\n\n"
         "Choose what you want to import via buttons below.\n"
         "• 'All' selects everything.\n"
         "• selecting specific types deselects 'All'.\n\n"
-        f"📂 **Source:** {context.user_data.get('import_source_title')}"
+        f"📂 **Source:** {safe_title}"
     )
     
     if update.callback_query:
@@ -110,13 +177,14 @@ async def show_limit_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             row = []
     if row: keyboard.append(row)
     
+    keyboard.append([InlineKeyboardButton("✏️ Custom Number", callback_data="imp_limit_custom")])
     keyboard.append([InlineKeyboardButton("⬅️ Back", callback_data="imp_back_filter")])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     await update.callback_query.edit_message_text(
         "🔢 **How many posts to scan?**\n\n"
-        "Select the number of latest posts to check for files.\n"
+        "Select an option or choose Custom.\n"
         "Scanning older posts takes longer.",
         reply_markup=reply_markup,
         parse_mode="Markdown"
@@ -125,27 +193,60 @@ async def show_limit_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start_import_process(update: Update, context: ContextTypes.DEFAULT_TYPE, limit):
     """Initialize the background import task"""
     query = update.callback_query
+    if not query:
+        # Called from text input usually
+        chat_id = update.effective_chat.id
+        message_id = None # New message
+    else:
+        chat_id = query.message.chat_id
+        message_id = query.message.message_id
+        
     user_id = update.effective_user.id
     source_id = context.user_data['import_source_id']
     filters = context.user_data['import_filters']
     
+    # Cast limit
+    if limit != 'all':
+        try:
+            limit = int(limit)
+        except:
+            limit = 100 # Fallback
+    
     # Initial UI
-    await query.edit_message_text(
-        "⏳ **Starting Import...**\n\n"
-        "Scanning channel for files...",
-        parse_mode="Markdown"
-    )
+    msg_text = "⏳ **Starting Import...**\n\nScanning channel for files..."
+    
+    if query:
+        await query.edit_message_text(msg_text, parse_mode="Markdown")
+    else:
+        # Send new message if text input
+        msg = await context.bot.send_message(chat_id, msg_text, parse_mode="Markdown")
+        message_id = msg.message_id
     
     # Run in background
     asyncio.create_task(run_import_task(
         context, 
         user_id, 
-        query.message.chat_id, 
-        query.message.message_id, 
+        chat_id, 
+        message_id, 
         source_id, 
         filters, 
         limit
     ))
+
+async def handle_import_limit_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle custom limit number"""
+    text = update.message.text.strip()
+    if not text.isdigit():
+        await update.message.reply_text("❌ Please enter a valid number (e.g. 50).")
+        return
+        
+    limit = int(text)
+    if limit < 1: limit = 1
+    if limit > 10000: limit = 10000 # Safety cap
+    
+    await start_import_process(update, context, limit)
+    
+# ... run_import_task is below ...
 
 async def run_import_task(context, user_id, chat_id, message_id, source_id, filters, limit):
     """Background task logic"""
@@ -154,108 +255,137 @@ async def run_import_task(context, user_id, chat_id, message_id, source_id, filt
         scanned = 0
         found = 0
         
-        # Determine scan strategy
-        # Simplified strategy: We can't easily iterate history with Bot API.
-        # Workaround: Send a dummy message to get ID, then work backwards.
-        try:
-            dummy = await context.bot.send_message(source_id, ".")
-            last_id = dummy.message_id
-            await dummy.delete()
-        except:
-            last_id = 100000 # Fallback high number
-            
-        start_id = last_id
-        target = last_id - (limit if limit != 'all' else 5000) # Hard cap 5000 for 'all' safety
+        # Determine scan start point
+        start_id = context.user_data.get('import_start_msg_id')
+        
+        if not start_id:
+            # Default: Latest message
+            try:
+                dummy = await context.bot.send_message(source_id, ".")
+                start_id = dummy.message_id
+                await dummy.delete()
+            except:
+                start_id = 100000 # Fallback
+                
+        # Limit arithmetic
+        limit_val = int(limit) if limit != 'all' else 5000
+        
+        target = start_id - limit_val
         if target < 1: target = 1
         
         # Progress Loop
         current_id = start_id
-        while current_id > target and (limit == 'all' or scanned < int(limit) if limit != 'all' else True):
-            current_id -= 1
-            scanned += 1
+        while current_id > target and (limit == 'all' or scanned < limit_val):
+            # Scan Strategy: Downwards
+            process_id = current_id 
             
-            # Rate limiting
-            if scanned % 20 == 0:
-                await asyncio.sleep(1) # Be nice
-                # Update UI
+            # Rate limiting & UI Update
+            # Update every 5% or at least every 5 messages
+            update_step = max(5, int(limit_val / 20))
+            
+            if scanned > 0 and (scanned % update_step == 0 or scanned == limit_val):
                 try:
+                    percent = 0
+                    if limit != 'all':
+                        percent = int((scanned / limit_val) * 100)
+                    
+                    # Bar: [██████░░░░]
+                    filled = int(percent / 10)
+                    bar = "▓" * filled + "░" * (10 - filled)
+                    
+                    status_text = (
+                        f"📥 **Importing Files...**\n"
+                        f"`[{bar}] {percent}%`\n\n"
+                        f"📂 **Scanned:** {scanned}/{limit_val}\n"
+                        f"✅ **Found:** {found}\n"
+                        f"📉 **Current ID:** `{process_id}`"
+                    )
+                    
                     await context.bot.edit_message_text(
                         chat_id=chat_id,
                         message_id=message_id,
-                        text=f"🔄 **Importing...**\n\n"
-                             f"📂 Scanned: {scanned}\n"
-                             f"✅ Found: {found}\n"
-                             f"📉 ID: {current_id}",
+                        text=status_text,
                         parse_mode="Markdown"
                     )
-                except: pass
+                    # Small yield to prevent blocking event loop, but not slow down opacity
+                    await asyncio.sleep(0.1)
+                except Exception as e:
+                    # Ignore "Message not modified" or Rate Limits
+                    await asyncio.sleep(1) # Backoff slightly on error
+                    pass
 
             try:
-                # Try to copy message to STORAGE CHANNEL directly
-                # We copy to primary storage first to validate content
-                # Filter check
-                # Note: We can't check type without copying or forwarding first because we can't 'get' message.
-                # So we try copy to Storage. If fails (empty/deleted), ignore.
-                
-                # Copy to Primary Storage
-                msg = await context.bot.copy_message(
+                # 1. Forward first to inspect content (returns full Message object)
+                # We use forward because copy_message returns MessageId object (no data)
+                temp_msg = await context.bot.forward_message(
                     chat_id=config.PRIMARY_CHANNEL,
                     from_chat_id=source_id,
-                    message_id=current_id
+                    message_id=process_id
                 )
                 
-                # Check Filter
+                # Inspect content
+                file_type = None
+                if temp_msg.document: file_type = 'document'
+                elif temp_msg.video: file_type = 'video'
+                elif temp_msg.audio: file_type = 'audio'
+                elif temp_msg.photo: file_type = 'photo'
+                
                 is_valid = False
                 if 'all' in filters:
-                    is_valid = bool(msg.document or msg.video or msg.audio or msg.photo)
-                else:
-                    if 'video' in filters and msg.video: is_valid = True
-                    elif 'document' in filters and msg.document: is_valid = True
-                    elif 'audio' in filters and msg.audio: is_valid = True
-                    elif 'photo' in filters and msg.photo: is_valid = True
+                    is_valid = bool(file_type)
+                elif file_type and file_type in filters:
+                    is_valid = True
                 
                 if is_valid:
-                    # Keep it and Store metadata
-                    # Backup redundancy logic (Optional for import speed? Let's do async redundancy later? No, do it now)
-                    # For speed, we skip backup copies during bulk import, or launch async tasks.
-                    # We store basic info.
+                    # 2. Valid! Create CLEAN COPY (no forward tag)
+                    clean_msg_id = await context.bot.copy_message(
+                        chat_id=config.PRIMARY_CHANNEL,
+                        from_chat_id=source_id,
+                        message_id=process_id
+                    )
+                    # copy_message returns MessageId object
+                    final_mid = clean_msg_id.message_id
                     
-                    # Extract file info
-                    f_id = None
-                    f_name = "Imported File"
-                    f_size = 0
+                    # Extract info from temp_msg (it has the data)
+                    f_id, f_name, f_size = None, "Imported", 0
                     
-                    if msg.document:
-                        f_id = msg.document.file_id
-                        f_name = msg.document.file_name or "Document"
-                        f_size = msg.document.file_size
-                    elif msg.video:
-                        f_id = msg.video.file_id
-                        f_name = msg.video.file_name or "Video"
-                        f_size = msg.video.file_size
-                    elif msg.audio:
-                        f_id = msg.audio.file_id
-                        f_name = msg.audio.file_name or "Audio"
-                        f_size = msg.audio.file_size
-                    elif msg.photo:
-                        f_id = msg.photo[-1].file_id
+                    if temp_msg.document:
+                        f_id = temp_msg.document.file_id
+                        f_name = temp_msg.document.file_name or "Document"
+                        f_size = temp_msg.document.file_size
+                    elif temp_msg.video:
+                        f_id = temp_msg.video.file_id
+                        f_name = temp_msg.video.file_name or "Video"
+                        f_size = temp_msg.video.file_size
+                    elif temp_msg.audio:
+                        f_id = temp_msg.audio.file_id
+                        f_name = temp_msg.audio.file_name or "Audio"
+                        f_size = temp_msg.audio.file_size
+                    elif temp_msg.photo:
+                        f_id = temp_msg.photo[-1].file_id
                         f_name = "Photo.jpg"
-                        f_size = msg.photo[-1].file_size
+                        f_size = temp_msg.photo[-1].file_size
                     
                     imported_files.append({
-                        "message_id": msg.message_id, # Primary
+                        "message_id": final_mid, # stored info
                         "file_id": f_id,
                         "file_name": f_name,
                         "file_size": f_size,
-                        # "backup_messages": [] # Skip backups for bulk import speed, or implement queue
+                        "file_type": file_type
                     })
                     found += 1
-                else:
-                    # Delete if not matching filter or text-only
-                    await msg.delete()
+                
+                # 3. Cleanup temp forward
+                await temp_msg.delete()
                     
-            except Exception:
-                continue # Message deleted or inaccessible
+            except Exception as e:
+                # print(f"Skip: {e}")
+                pass
+            
+            # Decrement loop - MUST BE OUTSIDE TRY/EXCEPT
+            current_id -= 1
+            scanned += 1
+                 
                 
         # Finish
         if not imported_files:
@@ -267,42 +397,32 @@ async def run_import_task(context, user_id, chat_id, message_id, source_id, filt
             )
             return
 
-        # Generate Link
-        from handlers.admin import create_share_link
-        # We need to simulate the 'link' object creation manually or use helper
-        # Logic:
-        # Create link entry in DB
-        import secrets
-        from datetime import datetime
-        link_id = secrets.token_urlsafe(6)
+        # Hand over to Manual Flow (Standard Generation)
+        from handlers.admin import pending_files
+        pending_files[user_id] = imported_files
         
-        link_data = {
-            "link_id": link_id,
-            "user_id": user_id,
-            "name": f"Imported {context.user_data.get('import_source_title')}",
-            "files": imported_files, # List of file objects
-            "created_at": datetime.now(),
-            "views": 0,
-            "downloads": 0
-        }
+        # Set state for naming
+        context.user_data['awaiting_link_name'] = True
         
-        # Insert to DB
-        # db.links.insert_one(link_data) -> Need db access
-        await asyncio.to_thread(db.links.insert_one, link_data)
+        # We can suggest a name based on channel title
+        suggested_name = context.user_data.get('import_source_title', 'Imported Files')
+        context.user_data['default_link_name'] = f"Imported: {suggested_name}"
         
-        # Update User stats
-        # await asyncio.to_thread(db.users.update_one, ...)
+        from telegram.helpers import escape_markdown
+        safe_name = escape_markdown(suggested_name, version=1)
         
-        # Send Success
-        base_url = f"https://t.me/{config.BOT_USERNAME.replace('@', '')}?start={link_id}"
+        success_text = (
+            f"✅ **Import Complete!**\n\n"
+            f"📦 **{found} Files Ready.**\n\n"
+            f"✏️ **Name your Link:**\n"
+            f"Enter a name for this collection.\n\n"
+            f"Type /skip to use default:\n`Imported: {safe_name}`"
+        )
         
         await context.bot.edit_message_text(
             chat_id=chat_id,
             message_id=message_id,
-            text=f"✅ **Import Complete!**\n\n"
-                 f"📂 Scanned: {scanned}\n"
-                 f"📦 Imported: {found}\n\n"
-                 f"🔗 **Your Link:**\n{base_url}",
+            text=success_text,
             parse_mode="Markdown"
         )
         
@@ -345,9 +465,19 @@ async def handle_import_callback(update: Update, context: ContextTypes.DEFAULT_T
         await show_limit_menu(update, context)
         
     elif data.startswith("imp_limit_"):
-        limit = data.split("_")[2]
+        limit_str = data.split("_")[2]
+        
+        if limit_str == "custom":
+             context.user_data['import_step'] = 'LIMIT_INPUT'
+             await query.message.edit_text(
+                 "🔢 **Custom Limit**\n\n"
+                 "Send the number of posts you want me to scan (e.g. `250`).", 
+                 parse_mode="Markdown"
+             )
+             return
+             
         # Start
-        await start_import_process(update, context, limit)
+        await start_import_process(update, context, limit_str)
         
     elif data == "imp_cancel":
         context.user_data['import_step'] = None
