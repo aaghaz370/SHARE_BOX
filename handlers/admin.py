@@ -478,8 +478,12 @@ async def mylinks_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard.append([InlineKeyboardButton("🏠 Main Menu", callback_data="menu_start")])
     
     # Dashboard Button
-    dashboard_base = config.WEBHOOK_URL if config.WEBHOOK_URL else f"http://127.0.0.1:{config.PORT}"
-    # Remove trailing slash if present
+    # Fetch at runtime to ensure environment variables are respected
+    import os
+    env_url = os.getenv("WEBHOOK_URL") or os.getenv("RENDER_EXTERNAL_URL")
+    port = os.getenv("PORT", "8000")
+    
+    dashboard_base = env_url if env_url else f"http://127.0.0.1:{port}"
     dashboard_base = dashboard_base.rstrip('/')
     dashboard_url = f"{dashboard_base}/dashboard?u={user_id}"
     
