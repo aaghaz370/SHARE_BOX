@@ -5,6 +5,7 @@ Advanced helper functions for the bot
 
 from functools import wraps
 from telegram import Update
+from telegram.helpers import escape_markdown
 from telegram.ext import ContextTypes
 from datetime import datetime, timedelta
 import re
@@ -85,6 +86,52 @@ def premium_only(func):
         return await func(update, context, *args, **kwargs)
     
     return wrapper
+
+from telegram import BotCommand, BotCommandScopeChat
+
+async def update_user_menu(bot, user_id):
+    """Update command menu for specific user based on plan"""
+    is_premium = db.is_user_premium(user_id)
+    is_admin = user_id in config.ADMIN_IDS
+    
+    # Base commands
+    commands = [
+        BotCommand("start", "🏠 Start"),
+        BotCommand("upload", "📤 Upload"),
+        BotCommand("stop", "🛑 Stop"),
+        BotCommand("checklink", "🔎 Check"),
+        BotCommand("mylinks", "🔗 Links"),
+        BotCommand("stats", "📊 Stats"),
+        BotCommand("upgrade", "💎 Premium"),
+        BotCommand("help", "❓ Help"),
+        BotCommand("settings", "⚙️ Settings"),
+        BotCommand("referral", "🎁 Refer"),
+    ]
+    
+    # Premium
+    if is_premium or is_admin:
+        commands.extend([
+            BotCommand("search", "🔍 Search"),
+            BotCommand("qrcode", "📱 QR Code"),
+            BotCommand("setname", "🏷️ Rename"),
+            BotCommand("setpassword", "🔒 Password"),
+            BotCommand("protect", "🛡️ Protect"),
+        ])
+        
+    # Admin
+    if is_admin:
+        commands.extend([
+            BotCommand("ban", "🚫 Ban"),
+            BotCommand("unban", "✅ Unban"),
+            BotCommand("broadcast", "📢 Broadcast"),
+            BotCommand("adminstats", "📈 Admin Stats"),
+            BotCommand("grantpremium", "👑 Grant"),
+        ])
+        
+    try:
+        await bot.set_my_commands(commands, scope=BotCommandScopeChat(user_id))
+    except Exception as e:
+        print(f"Error updating menu: {e}")
 
 # ==================== FORMATTING HELPERS ====================
 
@@ -265,11 +312,14 @@ def extract_link_id_from_text(text: str) -> Optional[str]:
         return None
     
     # Match t.me/bot?start=LINKID
-    pattern = r't\.me/[\w]+\?start=([A-Za-z0-9_-]+)'
-    match = re.search(pattern, text)
+    pattern_tg = r't\.me/[\w]+\?start=([A-Za-z0-9_-]+)'
+    match = re.search(pattern_tg, text)
+    if match: return match.group(1)
     
-    if match:
-        return match.group(1)
+    # Match /share/LINKID (Webhook URL)
+    pattern_share = r'/share/([A-Za-z0-9_-]+)'
+    match = re.search(pattern_share, text)
+    if match: return match.group(1)
     
     # Match direct link ID (8 characters)
     if re.match(r'^[A-Za-z0-9_-]{8}$', text.strip()):
@@ -325,115 +375,144 @@ def create_pagination_data(
 # ==================== TIER CHECK HELPERS ====================
 
 def check_upload_limit(user_id: int, file_count: int, file_size: int) -> dict:
-    """Check if user can upload files"""
-    user = db.get_user(user_id)
-    is_premium = db.is_user_premium(user_id)
+    """Check if user can upload files based on their plan"""
     
-    # Get limits
-    if is_premium:
-        max_files = config.PremiumLimits.MAX_FILES_PER_LINK
-        max_file_size = config.PremiumLimits.MAX_FILE_SIZE_BYTES
-        max_storage = config.PremiumLimits.TOTAL_STORAGE_BYTES
-    else:
-        max_files = config.FreeLimits.MAX_FILES_PER_LINK
-        max_file_size = config.FreeLimits.MAX_FILE_SIZE_BYTES
-        max_storage = config.FreeLimits.TOTAL_STORAGE_BYTES
+    # Admins have no limits
+    if user_id in config.ADMIN_IDS:
+        return {"allowed": True}
+        
+    plan = db.get_plan_details(user_id)
     
-    # Check file count (0 = unlimited)
-    if max_files > 0 and file_count > max_files:
+    max_files = plan.get("max_files_per_link", 20)
+    max_file_size = plan.get("max_file_size_bytes", 2 * 1024 * 1024 * 1024)
+    storage_limit = plan.get("storage_bytes", 50 * 1024 * 1024 * 1024)
+    
+    # Check file count
+    if max_files < 99999 and file_count > max_files:
         return {
             "allowed": False,
-            "reason": f"File limit exceeded! Free tier: {max_files} files per link. Upgrade to premium for unlimited!"
+            "reason": f"File count limit! Your plan: {max_files} files per link."
         }
     
     # Check file size
     if file_size > max_file_size:
-        max_gb = max_file_size / (1024**3)
         return {
             "allowed": False,
-            "reason": f"File too large! Max size: {max_gb}GB. {'Upgrade to premium for 4GB!' if not is_premium else ''}"
+            "reason": f"File too large! Your plan limit: {format_file_size(max_file_size)} per file."
         }
-    
+        
     # Check total storage
-    storage_used = user.get("storage_used", 0)
-    if storage_used + file_size > max_storage:
+    current_storage = db.get_user_storage_used(user_id)
+    if storage_limit < 999999999999 and (current_storage + file_size) > storage_limit:
         return {
             "allowed": False,
-            "reason": f"Storage limit reached! Used: {format_file_size(storage_used)}/{format_file_size(max_storage)}. {'Upgrade to premium for more!' if not is_premium else 'Delete old links to free space.'}"
+            "reason": f"Storage full! Your limit: {format_file_size(storage_limit)}."
         }
-    
+        
     return {"allowed": True}
 
 def check_link_creation_limit(user_id: int) -> dict:
-    """Check if user can create new link"""
-    is_premium = db.is_user_premium(user_id)
+    """Check if user can create new links"""
     
-    if is_premium:
-        max_links = config.PremiumLimits.MAX_ACTIVE_LINKS
-    else:
-        max_links = config.FreeLimits.MAX_ACTIVE_LINKS
-    
-    # 0 = unlimited
-    if max_links == 0:
+    if user_id in config.ADMIN_IDS:
         return {"allowed": True}
+        
+    # Check monthly limit
+    allowed = db.check_monthly_limit(user_id)
     
-    active_links = db.get_user_active_links_count(user_id)
-    
-    if active_links >= max_links:
+    if not allowed:
+        plan = db.get_plan_details(user_id)
+        limit = plan.get("max_active_links", 10)
         return {
             "allowed": False,
-            "reason": f"Link limit reached! You have {active_links}/{max_links} active links. {'Upgrade to premium for unlimited!' if not is_premium else 'Delete old links to create new ones.'}"
+            "reason": f"Monthly link limit reached! ({limit}/month)"
         }
-    
+        
     return {"allowed": True}
 
 # ==================== ANALYTICS HELPERS ====================
 
 def format_user_stats(user_id: int) -> str:
-    """Format user statistics message"""
+    """Format user statistics message with detailed dashboard"""
     user = db.get_user(user_id)
     if not user:
         return "❌ User not found"
+        
+    plan = db.get_plan_details(user_id)
+    stats = db.get_user_stats(user_id)
     
-    is_premium = db.is_user_premium(user_id)
-    analytics = db.get_user_analytics(user_id)
+    plan_name = plan.get("name", "Free Tier").upper()
+    expiry = user.get("premium_expiry")
     
-    # Plan info
-    plan = "💎 Premium" if is_premium else "🆓 Free"
+    # 1. Storage
+    storage_used = stats.get('storage_used', 0)
+    storage_limit = plan.get("storage_bytes", 0)
     
-    # Storage info
-    storage_used = user.get("storage_used", 0)
-    storage_limit = config.PremiumLimits.TOTAL_STORAGE_BYTES if is_premium else config.FreeLimits.TOTAL_STORAGE_BYTES
-    storage_percentage = int((storage_used / storage_limit) * 100) if storage_limit > 0 else 0
+    storage_pct = 0
+    limit_text = "Unlimited"
     
-    storage_bar = create_progress_bar(storage_used, storage_limit, 15)
+    # Check if unlimited (arbitrary large number > 100TB)
+    is_unlimited = storage_limit > 100 * 1024 * 1024 * 1024 * 1024
     
-    # Links info
-    active_links = analytics.get("total_links", 0)
-    max_links = config.PremiumLimits.MAX_ACTIVE_LINKS if is_premium else config.FreeLimits.MAX_ACTIVE_LINKS
-    max_links_str = "Unlimited" if max_links == 0 else str(max_links)
+    if not is_unlimited:
+         limit_text = format_file_size(storage_limit)
+         if storage_limit > 0:
+             storage_pct = int((storage_used / storage_limit) * 100)
+             
+    storage_bar = create_progress_bar(storage_used, storage_limit if not is_unlimited else storage_used * 2, 15)
     
-    # Category breakdown
-    categories = analytics.get("category_breakdown", {})
-    top_categories = sorted(categories.items(), key=lambda x: x[1], reverse=True)[:3]
-    category_list = "\n".join([f"• {cat}: {count} links" for cat, count in top_categories]) or "No links yet"
+    # 2. Expiry
+    expiry_text = "NEVER"
+    days_left_text = ""
     
-    # Format message
-    message = config.STATS_MESSAGE.format(
-        username=user.get("username") or "Unknown",
-        plan=plan,
-        joined_date=format_datetime(user.get("joined_at")),
-        storage_used=format_file_size(storage_used),
-        storage_limit=format_file_size(storage_limit),
-        storage_percentage=storage_percentage,
-        storage_bar=storage_bar,
-        active_links=active_links,
-        max_links=max_links_str,
-        total_downloads=analytics.get("total_downloads", 0),
-        total_views=analytics.get("total_views", 0),
-        popular_categories=category_list
-    )
+    if expiry:
+         if expiry.tzinfo is None: expiry = expiry.replace(tzinfo=pytz.UTC)
+         expiry_text = expiry.strftime('%d %b %Y')
+         days_left = (expiry - datetime.now(pytz.UTC)).days
+         if days_left < 0: 
+             expiry_text = "EXPIRED"
+         else:
+             days_left_text = f"({days_left} days left)"
+    elif plan.get("price", 0) > 0:
+         expiry_text = "EXPIRED"
+         
+    # 3. Monthly Links
+    monthly_used = user.get("monthly_link_count", 0)
+    monthly_limit = plan.get("max_active_links", 10)
+    monthly_text = f"{monthly_used} / {monthly_limit if monthly_limit < 99999 else '∞'}"
     
+    # 4. Global Stats
+    total_links = stats.get('total_links', 0)
+    total_files = stats.get('total_files', 0)
+    total_views = stats.get("total_views", 0)
+    total_downloads = stats.get("total_downloads", 0)
+
+    message = f"""
+👤 **ACCOUNT DASHBOARD**
+━━━━━━━━━━━━━━━━━━━━━
+**User:** {escape_markdown(user.get("first_name", "User"))}
+**ID:** `{user_id}`
+
+💎 **PLAN STATUS**
+━━━━━━━━━━━━━━━━━━━━━
+🏷️ **Current Plan:** `{plan_name}`
+📅 **Expiry:** {expiry_text} {days_left_text}
+🗓️ **Monthly Links:** `{monthly_text}`
+
+📊 **USAGE OVERVIEW**
+━━━━━━━━━━━━━━━━━━━━━
+🔗 **Active Links:** `{total_links}`
+📂 **Total Files:** `{total_files}`
+👁️ **Total Views:** `{total_views}`
+📥 **Total Downloads:** `{total_downloads}`
+
+💾 **STORAGE (Used / Total)**
+━━━━━━━━━━━━━━━━━━━━━
+`{storage_bar}`
+**{format_file_size(storage_used)} / {limit_text}** ({storage_pct}%)
+
+💡 _Upgrade to Premium for more limits!_
+"""
     return message
 
 # ==================== VALIDATION ====================

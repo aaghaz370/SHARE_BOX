@@ -16,7 +16,7 @@ ADMIN_IDS = [int(x.strip()) for x in os.getenv("ADMIN_IDS", "").split(",") if x.
 
 # ===== BRANDING =====
 BOT_NAME = os.getenv("BOT_NAME", "Share-box by Univora")
-BOT_USERNAME = os.getenv("BOT_USERNAME", "@ShareBoxBot")
+BOT_USERNAME = os.getenv("BOT_USERNAME", "@SHARE_BOX_BOT")
 BRAND_NAME = os.getenv("BRAND_NAME", "Univora 📦")
 
 # ===== DATABASE =====
@@ -44,25 +44,83 @@ ENABLE_ANALYTICS = os.getenv("ENABLE_ANALYTICS", "true").lower() == "true"
 ENABLE_REFERRALS = os.getenv("ENABLE_REFERRALS", "true").lower() == "true"
 ENABLE_QR_CODES = os.getenv("ENABLE_QR_CODES", "true").lower() == "true"
 
-# ===== FREE TIER LIMITS =====
-class FreeLimits:
-    MAX_FILES_PER_LINK = int(os.getenv("FREE_MAX_FILES_PER_LINK", "20"))
-    MAX_FILE_SIZE_GB = int(os.getenv("FREE_MAX_FILE_SIZE_GB", "2"))
-    MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_GB * 1024 * 1024 * 1024
-    MAX_ACTIVE_LINKS = int(os.getenv("FREE_MAX_ACTIVE_LINKS", "10"))
-    TOTAL_STORAGE_GB = int(os.getenv("FREE_TOTAL_STORAGE_GB", "50"))
-    TOTAL_STORAGE_BYTES = TOTAL_STORAGE_GB * 1024 * 1024 * 1024
-    LINK_EXPIRY_DAYS = int(os.getenv("FREE_LINK_EXPIRY_DAYS", "30"))
+# ===== PLAN TYPES =====
+class PlanTypes:
+    FREE = "free"
+    DAILY = "daily"
+    MONTHLY = "monthly"
+    BIMONTHLY = "bimonthly"
+    YEARLY = "yearly"
+    LIFETIME = "lifetime"
 
-# ===== PREMIUM TIER LIMITS =====
-class PremiumLimits:
-    MAX_FILES_PER_LINK = int(os.getenv("PREMIUM_MAX_FILES_PER_LINK", "0"))  # 0 = unlimited
-    MAX_FILE_SIZE_GB = int(os.getenv("PREMIUM_MAX_FILE_SIZE_GB", "4"))
-    MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_GB * 1024 * 1024 * 1024
-    MAX_ACTIVE_LINKS = int(os.getenv("PREMIUM_MAX_ACTIVE_LINKS", "0"))  # 0 = unlimited
-    TOTAL_STORAGE_GB = int(os.getenv("PREMIUM_TOTAL_STORAGE_GB", "500"))
-    TOTAL_STORAGE_BYTES = TOTAL_STORAGE_GB * 1024 * 1024 * 1024
-    LINK_EXPIRY_DAYS = int(os.getenv("PREMIUM_LINK_EXPIRY_DAYS", "0"))  # 0 = never
+# ===== PLANS CONFIGURATION =====
+PLANS = {
+    PlanTypes.FREE: {
+        "name": "Free Tier",
+        "price": 0,
+        "duration_days": 36500, # Forever
+        "storage_gb": 200,
+        "max_active_links": 10, # Per month
+        "link_expiry_days": 60, # 2 months
+        "max_files_per_link": 20,
+        "max_file_size_gb": 2
+    },
+    PlanTypes.DAILY: {
+        "name": "Daily Pass",
+        "price": 40,
+        "duration_days": 1,
+        "storage_gb": 200,
+        "max_active_links": 999999,
+        "link_expiry_days": 180, # 6 months
+        "max_files_per_link": 999999,
+        "max_file_size_gb": 4
+    },
+    PlanTypes.MONTHLY: {
+        "name": "Monthly Starter",
+        "price": 299,
+        "duration_days": 30,
+        "storage_gb": 999999, 
+        "max_active_links": 999999,
+        "link_expiry_days": 240, # 8 months
+        "max_files_per_link": 999999,
+        "max_file_size_gb": 4
+    },
+    PlanTypes.BIMONTHLY: {
+        "name": "Bi-Monthly Pro",
+        "price": 499,
+        "duration_days": 60,
+        "storage_gb": 999999, 
+        "max_active_links": 999999,
+        "link_expiry_days": 365, # 1 Year
+        "max_files_per_link": 999999,
+        "max_file_size_gb": 4
+    },
+    PlanTypes.YEARLY: {
+        "name": "Yearly Premium",
+        "price": 999,
+        "duration_days": 365,
+        "storage_gb": 999999, 
+        "max_active_links": 999999,
+        "link_expiry_days": 365,
+        "max_files_per_link": 999999,
+        "max_file_size_gb": 4
+    },
+    PlanTypes.LIFETIME: {
+        "name": "Lifetime Access",
+        "price": 2999,
+        "duration_days": 36500, # Forever
+        "storage_gb": 999999, 
+        "max_active_links": 999999,
+        "link_expiry_days": 36500, # Forever
+        "max_files_per_link": 999999,
+        "max_file_size_gb": 4
+    }
+}
+
+# Values in Bytes for easier calculation
+for plan in PLANS.values():
+    plan["storage_bytes"] = plan["storage_gb"] * 1024 * 1024 * 1024
+    plan["max_file_size_bytes"] = plan["max_file_size_gb"] * 1024 * 1024 * 1024
 
 # ===== FILE SETTINGS =====
 FILE_AUTO_DELETE_MINUTES = int(os.getenv("FILE_AUTO_DELETE_MINUTES", "20"))
@@ -189,11 +247,12 @@ HELP_MESSAGE = f"""
 💎 **PREMIUM (Coming Soon)**
 ━━━━━━━━━━━━━━━━━━━━━
 
+/setpassword - Set link password
+/protect - Prevent forwarding
+/search - Search your links
 /qrcode - Generate QR codes
-/schedule - Schedule links
-/analytics - Advanced stats
-/password - Set link password
-/whitelist - Restrict access
+/setname - Rename links
+/settings - Auto-QR options
 
 ━━━━━━━━━━━━━━━━━━━━━
 
@@ -208,8 +267,8 @@ UPLOAD_START_MESSAGE = """
 
 1️⃣ Send me your files (one by one)
    • Documents, Photos, Videos, Audio
-   • Max 2GB per file (Free tier)
-   • Up to 20 files per link
+   • Max 2GB (Free) | 4GB (Premium)
+   • Max 20 files (Free) | Unlimited (Premium)
 
 2️⃣ When done, use /done to create link
 
@@ -220,9 +279,9 @@ UPLOAD_START_MESSAGE = """
 
 After /done, you can add:
 • **Category** - Organize your files
-• **Custom name** - Easy identification
+• **Custom name** - Easy identification (Premium)
 • 💎 **Password** - Premium only
-• 💎 **Expiry** - Premium only
+• 💎 **Auto-QR** - Premium only
 
 ━━━━━━━━━━━━━━━━━━━━━
 
@@ -263,13 +322,6 @@ FILE_SENT_MESSAGE = """
 📌 **Name:** `{filename}`
 📦 **Size:** {filesize}
 🏷️ **Category:** {category}
-
-━━━━━━━━━━━━━━━━━━━━━
-⚠️ **AUTO-DELETE WARNING**
-━━━━━━━━━━━━━━━━━━━━━
-
-⏰ This file will be deleted in {time_left}!
-💾 Please save immediately!
 
 ━━━━━━━━━━━━━━━━━━━━━
 

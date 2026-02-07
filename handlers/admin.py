@@ -13,7 +13,7 @@ from utils.helpers import (
     get_file_info, generate_bot_link, calculate_total_size,
     get_file_emoji, create_pagination_data, truncate_text,
     format_expiry_date, check_upload_limit, check_link_creation_limit,
-    sanitize_filename
+    sanitize_filename, premium_only
 )
 from utils.qr_generator import generate_qr_code, generate_fancy_qr_code
 
@@ -42,10 +42,41 @@ async def upload_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Initialize pending files
     pending_files[user_id] = []
     
-    await update.message.reply_text(
-        config.UPLOAD_START_MESSAGE,
-        parse_mode="Markdown"
-    )
+    # Dynamic Upload Start Message
+    plan = db.get_plan_details(user_id)
+    plan_name = plan.get("name", "Free Tier").upper()
+    is_premium = db.is_user_premium(user_id)
+    
+    max_size = format_file_size(plan.get("max_file_size_bytes", 2*1024*1024*1024))
+    max_files = plan.get("max_files_per_link", 20)
+    
+    # Upsell Check
+    upsell = ""
+    if not is_premium:
+        upsell = "\n💡 **Upgrade to Premium:**\n• 4GB Uploads 🚀\n• Unlimited Files ♾️\n• Password Protection 🔒\n• Custom Names ✏️\n"
+    
+    msg = f"""
+📤 **UPLOAD MODE ACTIVATED!**
+{upsell}
+👤 **Plan Status:** `{plan_name}`
+📦 **Your Limits:**
+• Max Size: `{max_size}` per file
+• Max Files: `{'Unlimited' if max_files > 9000 else max_files}` per link
+
+🎯 **How to Start?**
+1️⃣ **Send your Files** (Documents, Photos, Videos)
+2️⃣ **Type /done** when finished to create link
+3️⃣ **Type /cancel** to abort
+
+✨ **Optional Features (After Upload):**
+• Set Category (Create folders)
+• {'✅' if is_premium else '🔒'} Set Password (Premium)
+• {'✅' if is_premium else '🔒'} Auto-QR Code (Premium)
+
+🚀 **Send your first file now!**
+"""
+
+    await update.effective_message.reply_text(msg, parse_mode="Markdown")
     
     db.log_event("upload_started", user_id=user_id)
 
@@ -89,8 +120,13 @@ async def handle_file_upload(update: Update, context: ContextTypes.DEFAULT_TYPE)
     file_info["file_name"] = sanitize_filename(file_info["file_name"])
     
     # Check file size limit
+    # Check file size limit
     is_premium = db.is_user_premium(user_id)
-    limit_check = check_upload_limit(user_id, 1, file_info["file_size"])
+    current_count = len(pending_files.get(user_id, [])) + 1
+    if is_add_mode:
+        current_count += len(pending_add_files.get(user_id, {}).get("files", []))
+        
+    limit_check = check_upload_limit(user_id, current_count, file_info["file_size"])
     
     if not limit_check["allowed"]:
         await message.reply_text(
@@ -145,32 +181,21 @@ async def handle_file_upload(update: Update, context: ContextTypes.DEFAULT_TYPE)
             current_files = pending_add_files[user_id]["files"]
         
         # Check file count limit
-        max_files = config.PremiumLimits.MAX_FILES_PER_LINK if is_premium else config.FreeLimits.MAX_FILES_PER_LINK
+        plan = db.get_plan_details(user_id)
+        max_files = plan.get("max_files_per_link", 20)
         
         # Success message with progress
         emoji = get_file_emoji(file_info["file_type"])
         total_size = calculate_total_size(current_files)
         
         status_message = f"""
-✅ **File Uploaded Successfully!**
-
-━━━━━━━━━━━━━━━━━━━━━
-
-{emoji} **File:** `{truncate_text(file_info['file_name'], 35)}`
+✅ **File Added!**
+`{truncate_text(file_info['file_name'], 45)}`
 📦 **Size:** {format_file_size(file_info['file_size'])}
-🔄 **Backup:** Triple redundancy ✅
 
-━━━━━━━━━━━━━━━━━━━━━
-📊 **Current Upload:**
-━━━━━━━━━━━━━━━━━━━━━
+📊 **Session:** {len(current_files)} Files • {format_file_size(total_size)} Total
 
-📁 **Files:** {len(current_files)}{f' / {max_files}' if max_files > 0 else ' (Unlimited)'}
-📦 **Total Size:** {format_file_size(total_size)}
-
-━━━━━━━━━━━━━━━━━━━━━
-
-📤 **Send more files or use /done to finish!**
-❌ **Cancel:** /cancel
+📤 _Send next file or use /done_
 """
         
         await message.reply_text(status_message, parse_mode="Markdown")
@@ -207,36 +232,48 @@ async def done_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 async def finish_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Finish upload mode and create link"""
-    
+    """Finish upload mode and ask for name"""
     user_id = update.effective_user.id
     files = pending_files.get(user_id, [])
     
     if not files:
         await update.message.reply_text(
             "❌ **No Files Uploaded!**\n\n"
-            "Please upload at least one file before using /done.",
+            "Upload files before using /done.",
             parse_mode="Markdown"
         )
         return
     
-    # Ask for category
+    # Ask for Link Name
+    context.user_data['awaiting_link_name'] = True
+    
+    await update.message.reply_text(
+        f"✅ **Files Uploaded!**\n\n"
+        f"✏️ **Name your Link:**\n"
+        "Enter a custom name so users can identify it easily.\n"
+        "Type /skip to use default name.",
+        parse_mode="Markdown"
+    )
+
+async def ask_link_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Ask for category generation"""
+    user_id = update.effective_user.id
+    files = pending_files.get(user_id, [])
+    
+    # Keyboard for categories
     keyboard = []
     row = []
     
     for idx, cat in enumerate(config.DEFAULT_CATEGORIES):
         row.append(InlineKeyboardButton(cat, callback_data=f"gen_cat_{cat}"))
-        
-        # 2 buttons per row
         if len(row) == 2 or idx == len(config.DEFAULT_CATEGORIES) - 1:
             keyboard.append(row)
             row = []
-    
+            
     # Add skip option
-    keyboard.append([InlineKeyboardButton("⏭️ Skip (Use default)", callback_data="gen_cat_skip")])
+    keyboard.append([InlineKeyboardButton("⏭️ Skip Category", callback_data="gen_cat_skip")])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
-    
     total_size = calculate_total_size(files)
     
     await update.message.reply_text(
@@ -247,7 +284,7 @@ async def finish_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
     
-    # Store in context for callback
+    # Store pending flag
     context.user_data['pending_generation'] = True
 
 async def finish_add_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -322,6 +359,14 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if 'pending_generation' in context.user_data:
         del context.user_data['pending_generation']
         was_active = True
+
+    if 'awaiting_link_name' in context.user_data:
+        del context.user_data['awaiting_link_name']
+        was_active = True
+        
+    if 'link_name' in context.user_data:
+        del context.user_data['link_name']
+        was_active = True
     
     if was_active:
         await update.message.reply_text(
@@ -385,23 +430,41 @@ async def mylinks_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     header += f"📄 **Page:** {pagination['page']}/{pagination['total_pages']}\n"
     header += f"━━━━━━━━━━━━━━━━━━━━━\n\n"
     
-    links_text = ""
+    # Build message with inline buttons for each link
+    header = f"🔗 **Your Links**"
+    if category:
+        header += f" - {category}"
+    
+    header += f"\n\n📊 **Total:** {pagination['total_items']} links\n"
+    header += f"📄 **Page:** {pagination['page']}/{pagination['total_pages']}\n"
+    header += f"━━━━━━━━━━━━━━━━━━━━━\n\n"
+    
+    message_text = header
+    keyboard = []
     
     for idx, link in enumerate(pagination['items'], start=pagination['start_idx'] + 1):
-        bot_link = generate_bot_link(link['link_id'])
         emoji = "💎" if link.get('is_premium_link') else "🔗"
+        link_name = truncate_text(link.get('link_name', 'Untitled'), 30)
+        file_count = len(link.get('files', []))
+        total_size = format_file_size(link.get('total_size', 0))
+        views = link.get('views', 0)
         
-        links_text += f"{emoji} **{idx}. {truncate_text(link.get('link_name', 'Untitled'), 25)}**\n"
-        links_text += f"   🆔 `{link['link_id']}`\n"
-        links_text += f"   📁 Files: {len(link['files'])} | 📦 {format_file_size(link.get('total_size', 0))}\n"
-        links_text += f"   📥 Downloads: {link.get('downloads', 0)} | 👁️ Views: {link.get('views', 0)}\n"
-        links_text += f"   🗂️ {link.get('category', 'Others')}\n"
-        links_text += f"   🔗 {bot_link}\n\n"
+        # Link summary
+        message_text += f"{emoji} **{idx}. {link_name}**\n"
+        message_text += f"   📁 {file_count} files | 📦 {total_size} | 👁️ {views} views\n"
+        
+        # Direct action buttons for this link
+        link_id = link['link_id']
+        keyboard.append([
+            InlineKeyboardButton("✏️ Edit", callback_data=f"edit_panel_{link_id}"),
+            InlineKeyboardButton("ℹ️ Info", callback_data=f"linfo_{link_id}"),
+            InlineKeyboardButton("📱 QR", callback_data=f"qr_{link_id}"),
+            InlineKeyboardButton("🗑️", callback_data=f"confirm_del_{link_id}")
+        ])
+        message_text += "\n"
     
-    # Pagination buttons
-    keyboard = []
+    # Navigation buttons
     nav_row = []
-    
     if pagination['has_prev']:
         nav_row.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"links_page_{page-1}_{category or 'all'}"))
     
@@ -411,21 +474,31 @@ async def mylinks_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if nav_row:
         keyboard.append(nav_row)
     
-    # Action buttons
-    keyboard.append([
-        InlineKeyboardButton("🗑️ Delete Link", callback_data="menu_delete"),
-        InlineKeyboardButton("ℹ️ Link Info", callback_data="menu_linkinfo")
-    ])
-    
+    # Bottom menu
     keyboard.append([InlineKeyboardButton("🏠 Main Menu", callback_data="menu_start")])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    await update.message.reply_text(
-        header + links_text,
-        reply_markup=reply_markup,
-        parse_mode="Markdown"
-    )
+    # Handle both command and callback query
+    if update.callback_query:
+        try:
+            await update.callback_query.edit_message_text(
+                message_text,
+                reply_markup=reply_markup,
+                parse_mode="Markdown"
+            )
+        except Exception:
+            await update.effective_message.reply_text(
+                message_text,
+                reply_markup=reply_markup,
+                parse_mode="Markdown"
+            )
+    else:
+        await update.message.reply_text(
+            message_text,
+            reply_markup=reply_markup,
+            parse_mode="Markdown"
+        )
 
 # ==================== DELETE LINK COMMAND ====================
 
@@ -570,6 +643,7 @@ async def linkinfo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("📤 Share", url=f"https://t.me/share/url?url={bot_link}"),
             InlineKeyboardButton ("🗑️ Delete", callback_data=f"del_{link_id}")
         ],
+        [InlineKeyboardButton("📱 QR Code", callback_data=f"qr_{link_id}")],
         [InlineKeyboardButton("🏠 Main Menu", callback_data="menu_start")]
     ]
     
@@ -639,6 +713,14 @@ async def add_files_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==================== QR CODE COMMAND ====================
 
 @user_check
+async def handle_dynamic_qr(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /qrcode_LINKID commands"""
+    text = update.message.text.strip()
+    if "_" in text:
+        link_id = text.split("_", 1)[1]
+        await send_qr_code(update, context, link_id)
+        
+@user_check
 async def qrcode_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Generate QR code for link (Premium feature)"""
     
@@ -673,51 +755,78 @@ async def qrcode_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     link_id = context.args[0]
     fancy = len(context.args) > 1 and context.args[1].lower() == "fancy"
     
+    await send_qr_code(update, context, link_id, fancy)
+
+async def send_qr_code(update: Update, context: ContextTypes.DEFAULT_TYPE, link_id: str, fancy: bool = False):
+    """Generate and send QR code with caching"""
     link = db.get_link(link_id)
-    
     if not link:
-        await update.message.reply_text(
-            "❌ **Link Not Found!**",
-            parse_mode="Markdown"
-        )
+        if update.callback_query:
+            await update.callback_query.answer("❌ Link Not Found!")
+        else:
+            await update.message.reply_text("❌ Link Not Found!")
         return
+
+    # Check cache
+    cache_key = "qr_file_id_fancy" if fancy else "qr_file_id"
+    cached_id = link.get(cache_key)
     
-    # Generate QR code
+    target_chat_id = update.effective_chat.id
+    caption = f"📥 **QR Code Generated!**\n\n🔗 **Link:** `{link_id}`\n🏷️ **Name:** {link.get('link_name', 'Untitled')}\n📁 **Files:** {len(link['files'])}\n\n📱 Scan to access files instantly!"
+    
+    status_msg = None
+    if not cached_id:
+        if update.callback_query:
+            await update.callback_query.answer("⏳ Generating QR...", show_alert=False)
+            status_msg = await context.bot.send_message(target_chat_id, "⏳ **Generating QR Code...**", parse_mode="Markdown")
+        else:
+            status_msg = await update.message.reply_text("⏳ **Generating QR Code...**", parse_mode="Markdown")
+
     try:
+        if cached_id:
+            try:
+                await context.bot.send_photo(
+                    chat_id=target_chat_id,
+                    photo=cached_id,
+                    caption=caption,
+                    parse_mode="Markdown"
+                )
+                if update.callback_query:
+                    await update.callback_query.answer()
+                return
+            except Exception:
+                # Cache invalid, regenerate
+                pass
+
+        # Generate
         bot_link = generate_bot_link(link_id)
-        
-        status_msg = await update.message.reply_text(
-            "⏳ **Generating QR Code...**",
-            parse_mode="Markdown"
-        )
-        
         if fancy:
             qr_image = generate_fancy_qr_code(bot_link, link_id)
         else:
             qr_image = generate_qr_code(bot_link, link_id)
-        
-        # Send QR code
-        await update.message.reply_photo(
+            
+        msg = await context.bot.send_photo(
+            chat_id=target_chat_id,
             photo=qr_image,
-            caption=f"📥 **QR Code Generated!**\n\n"
-                    f"🔗 **Link:** `{link_id}`\n"
-                    f"🏷️ **Name:** {link.get('link_name', 'Untitled')}\n"
-                    f"📁 **Files:** {len(link['files'])}\n\n"
-                    f"📱 Scan to access files instantly!",
+            caption=caption,
             parse_mode="Markdown"
         )
         
-        await status_msg.delete()
+        # Cache ID
+        if msg.photo:
+            file_id = msg.photo[-1].file_id
+            db.links.update_one({"link_id": link_id}, {"$set": {cache_key: file_id}})
         
-        db.log_event("qr_generated", user_id=user_id, link_id=link_id, metadata={"fancy": fancy})
-        
+        if status_msg:
+            await status_msg.delete()
+            
     except Exception as e:
-        print(f"QR generation error: {e}")
-        await update.message.reply_text(
-            "❌ **QR Generation Failed!**\n\n"
-            "Please try again later.",
-            parse_mode="Markdown"
-        )
+        print(f"QR Error: {e}")
+        error_text = "❌ QR Generation Failed!"
+        if status_msg:
+             await status_msg.edit_text(error_text)
+        elif update.message:
+            await update.message.reply_text(error_text)
 
 # ==================== ADMIN ONLY COMMANDS ====================
 
@@ -849,45 +958,15 @@ async def admin_stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 @admin_only
 async def grant_premium_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Grant premium to user"""
-    
-    if len(context.args) < 1:
-        await update.message.reply_text(
-            "💎 **Grant Premium**\n\n"
-            "**Usage:** `/grantpremium USER_ID [DAYS]`\n\n"
-            "Examples:\n"
-            "`/grantpremium 123456789` - Lifetime\n"
-            "`/grantpremium 123456789 30` - 30 days",
-            parse_mode="Markdown"
-        )
-        return
-    
-    try:
-        target_id = int(context.args[0])
-        days = int(context.args[1]) if len(context.args) > 1 else None
-    except:
-        await update.message.reply_text(
-            "❌ Invalid arguments!",
-            parse_mode="Markdown"
-        )
-        return
-    
-    success = db.grant_premium(target_id, days)
-    
-    if success:
-        duration = f"{days} days" if days else "Lifetime"
-        await update.message.reply_text(
-            f"💎 **Premium Granted!**\n\n"
-            f"🆔 **User:** `{target_id}`\n"
-            f"⏰ **Duration:** {duration}\n\n"
-            f"User now has premium access!",
-            parse_mode="Markdown"
-        )
-    else:
-        await update.message.reply_text(
-            "❌ Failed to grant premium!",
-            parse_mode="Markdown"
-        )
+    """Grant premium (Deprecated)"""
+    plans = ", ".join([f"`{k}`" for k in config.PLANS.keys()])
+    await update.message.reply_text(
+        f"⚠️ **Legacy Command Deprecated!**\n\n"
+        f"Please use the new **Plan System**:\n"
+        f"`/setplan USER_ID PLAN_NAME`\n\n"
+        f"**Available Plans:**\n{plans}",
+        parse_mode="Markdown"
+    )
 
 @admin_only
 async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -933,4 +1012,245 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"👥 **Total:** {len(users)}",
         parse_mode="Markdown"
     )
+
+
+# ==================== ADVANCED PREMIUM COMMANDS ====================
+
+@user_check
+@premium_only
+async def setpassword_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Set password for a link (Premium)"""
+    
+    if not context.args or len(context.args) < 2:
+        await update.message.reply_text(
+            "🔒 **Set Password**\n\n"
+            "**Usage:** `/setpassword LINK_ID PASSWORD`\n"
+            "**Remove:** `/setpassword LINK_ID off`\n\n"
+            "Example: `/setpassword AbC12XyZ mysecurepass`",
+            parse_mode="Markdown"
+        )
+        return
+    
+    link_id = context.args[0]
+    password = context.args[1]
+    
+    link = db.get_link(link_id)
+    if not link:
+        await update.message.reply_text("❌ **Link Not Found!**", parse_mode="Markdown")
+        return
+    
+    # Check ownership
+    user_id = update.effective_user.id
+    if link['admin_id'] != user_id and user_id not in config.ADMIN_IDS:
+        await update.message.reply_text("🚫 **Access Denied!**", parse_mode="Markdown")
+        return
+    
+    # Set password
+    if password.lower() == "off":
+        db.update_link(link_id, {"password": None})
+        msg = "🔓 **Password Removed!**\nLink is now public."
+    else:
+        db.update_link(link_id, {"password": password})
+        msg = f"🔒 **Password Set!**\n\n🔑 Password: `{password}`"
+        
+    await update.message.reply_text(
+        f"✅ **Success!**\n\n{msg}",
+        parse_mode="Markdown"
+    )
+
+@user_check
+@premium_only
+async def setname_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Set custom name for a link (Premium)"""
+    
+    if not context.args or len(context.args) < 2:
+        await update.message.reply_text(
+            "🏷️ **Set Custom Name**\n\n"
+            "**Usage:** `/setname LINK_ID New Name`\n\n"
+            "Example: `/setname AbC12XyZ Holiday Photos 2024`",
+            parse_mode="Markdown"
+        )
+        return
+    
+    link_id = context.args[0]
+    new_name = " ".join(context.args[1:])
+    
+    link = db.get_link(link_id)
+    if not link:
+        await update.message.reply_text("❌ **Link Not Found!**", parse_mode="Markdown")
+        return
+        
+    # Check ownership
+    user_id = update.effective_user.id
+    if link['admin_id'] != user_id and user_id not in config.ADMIN_IDS:
+        await update.message.reply_text("🚫 **Access Denied!**", parse_mode="Markdown")
+        return
+        
+    db.update_link(link_id, {"link_name": new_name})
+    
+    await update.message.reply_text(
+        f"✅ **Name Updated!**\n\n"
+        f"🔗 **Link:** `{link_id}`\n"
+        f"🏷️ **New Name:** {new_name}",
+        parse_mode="Markdown"
+    )
+
+@user_check
+@premium_only
+async def protect_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Toggle forward protection (Premium)"""
+    
+    if not context.args:
+        await update.message.reply_text(
+            "🛡️ **Content Protection**\n\n"
+            "Prevent files from being forwarded/saved.\n\n"
+            "**Usage:** `/protect LINK_ID [on/off]`\n\n"
+            "Example: `/protect AbC12XyZ on`",
+            parse_mode="Markdown"
+        )
+        return
+    
+    link_id = context.args[0]
+    
+    link = db.get_link(link_id)
+    if not link:
+        await update.message.reply_text("❌ **Link Not Found!**", parse_mode="Markdown")
+        return
+        
+    # Check ownership
+    user_id = update.effective_user.id
+    if link['admin_id'] != user_id and user_id not in config.ADMIN_IDS:
+        await update.message.reply_text("🚫 **Access Denied!**", parse_mode="Markdown")
+        return
+        
+    if len(context.args) > 1:
+        state = context.args[1].lower() == "on"
+    else:
+        # Toggle current state
+        state = not link.get('protect_content', False)
+        
+    db.update_link(link_id, {"protect_content": state})
+    
+    status = "ON 🛡️" if state else "OFF 🔓"
+    desc = "Files cannot be forwarded/saved." if state else "Files can be forwarded."
+    
+    await update.message.reply_text(
+        f"✅ **Protection Updated!**\n\n"
+        f"🔗 **Link:** `{link_id}`\n"
+        f"🛡️ **Status:** {status}\n"
+        f"ℹ️ {desc}",
+        parse_mode="Markdown"
+    )
+
+# ==================== SEARCH COMMAND ====================
+
+@user_check
+async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Search user links"""
+    
+    if not context.args:
+        await update.message.reply_text(
+            "🔍 **Search Links**\n\n"
+            "**Usage:** `/search QUERY`\n\n"
+            "Example: `/search holiday`",
+            parse_mode="Markdown"
+        )
+        return
+        
+    query = " ".join(context.args)
+    user_id = update.effective_user.id
+    
+    # Search in DB
+    # We need a db method for regex search or filter in python
+    # db.get_user_links supports filter?
+    # db.get_user_links(user_id, category=... skip=...)
+    # I should add search method to db or fetch all and filter (inefficient but ok for now)
+    
+    # Let's assume fetching all (limit 1000) is okay for now
+    all_links = db.get_user_links(user_id, limit=1000)
+    
+    results = []
+    for link in all_links:
+        if query.lower() in link.get('link_name', '').lower() or query.lower() in link.get('category', '').lower() or query in link['link_id']:
+            results.append(link)
+            
+    if not results:
+        if update.callback_query:
+            await update.callback_query.answer("❌ No links found!")
+        else:
+            await update.effective_message.reply_text(
+                "❌ **No Links Found!**\n\n"
+                "You haven't created any links yet.\n"
+                "Use /upload to start sharing files!",
+                parse_mode="Markdown"
+            )
+        return
+        
+    # Show results (Top 10)
+    message = f"🔍 **Search Results for:** `{query}`\n\n"
+    
+    for idx, link in enumerate(results[:10], 1):
+        bot_link = generate_bot_link(link['link_id'])
+        emoji = "💎" if link.get('is_premium_link') else "🔗"
+        message += f"{emoji} **{idx}. {truncate_text(link.get('link_name', 'Untitled'), 30)}**\n"
+        message += f"   🆔 `{link['link_id']}`\n"
+        message += f"   🔗 {bot_link}\n\n"
+        
+    if len(results) > 10:
+        message += f"...and {len(results) - 10} more results.\n"
+        
+    await update.message.reply_text(message, parse_mode="Markdown")
+
+# ==================== PLAN MANAGEMENT ====================
+
+@admin_only
+async def set_plan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Set user plan"""
+    if not context.args or len(context.args) < 2:
+        available_plans = ", ".join([f"`{k}`" for k in config.PLANS.keys()])
+        await update.message.reply_text(
+            f"❌ **Usage:** `/setplan USER_ID PLAN_NAME`\n\n"
+            f"📋 **Available Plans:**\n{available_plans}",
+            parse_mode="Markdown"
+        )
+        return
+
+    try:
+        target_id = int(context.args[0])
+        plan_name = context.args[1].lower()
+    except ValueError:
+        await update.message.reply_text("❌ Invalid User ID!")
+        return
+
+    if plan_name not in config.PLANS:
+        available_plans = ", ".join([f"`{k}`" for k in config.PLANS.keys()])
+        await update.message.reply_text(f"❌ **Invalid Plan!**\n\nAvailable: {available_plans}", parse_mode="Markdown")
+        return
+
+    plan_details = config.PLANS[plan_name]
+    
+    if db.set_user_plan(target_id, plan_name):
+        notify_text = "✅ **Plan Updated!** (User notification failed)"
+        try:
+            # Try to notify user
+            await context.bot.send_message(
+                chat_id=target_id,
+                text=f"🎉 **Your Plan Has Been Updated!**\n\n"
+                     f"💎 **New Plan:** {plan_details['name']}\n"
+                     f"📅 **Duration:** {plan_details['duration_days']} days\n"
+                     f"🚀 Enjoy enhanced limits!",
+                parse_mode="Markdown"
+            )
+            notify_text = "✅ **Plan Updated & User Notified!**"
+        except Exception:
+            pass
+            
+        await update.message.reply_text(
+            f"{notify_text}\n\n"
+            f"👤 User: `{target_id}`\n"
+            f"💎 Plan: `{plan_details['name']}`",
+            parse_mode="Markdown"
+        )
+    else:
+        await update.message.reply_text("❌ Failed to update plan in database.")
 

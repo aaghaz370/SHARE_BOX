@@ -126,6 +126,11 @@ class Database:
     def get_user(self, user_id: int) -> Optional[Dict]:
         """Get user by ID"""
         return self.users.find_one({"user_id": user_id})
+
+    def get_user_storage_used(self, user_id: int) -> int:
+        """Get user storage used in bytes"""
+        user = self.users.find_one({"user_id": user_id}, {"storage_used": 1})
+        return user.get("storage_used", 0) if user else 0
     
     def update_user_storage(self, user_id: int, storage_delta: int) -> bool:
         """Update user storage (can be negative)"""
@@ -135,40 +140,139 @@ class Database:
         )
         return result.modified_count > 0
     
-    def is_user_premium(self, user_id: int) -> bool:
-        """Check if user has active premium"""
-        user = self.get_user(user_id)
-        if not user or not user.get("is_premium"):
-            return False
+    def set_user_plan(self, user_id: int, plan_type: str) -> bool:
+        """Set user plan"""
+        plan_config = config.PLANS.get(plan_type)
+        if not plan_config: return False
         
-        expiry = user.get("premium_expiry")
-        if not expiry:
-            return True  # Lifetime premium
+        duration = plan_config.get("duration_days", 30)
+        expiry = datetime.now(pytz.UTC) + timedelta(days=duration)
         
-        # Ensure timezone aware
-        if expiry.tzinfo is None:
-            expiry = expiry.replace(tzinfo=pytz.UTC)
-        
-        return datetime.now(pytz.UTC) < expiry
-    
-    def grant_premium(self, user_id: int, duration_days: int = None) -> bool:
-        """Grant premium to user (None = lifetime)"""
+        # Reset monthly count if upgrading
         update_data = {
-            "is_premium": True,
-            "subscription_tier": "premium"
+            "plan_type": plan_type,
+            "premium_expiry": expiry,
+            "is_premium": plan_type != config.PlanTypes.FREE,
+            "last_link_reset": datetime.now(pytz.UTC),
+            "monthly_link_count": 0
         }
-        
-        if duration_days:
-            expiry = datetime.now(pytz.UTC) + timedelta(days=duration_days)
-            update_data["premium_expiry"] = expiry
-        else:
-            update_data["premium_expiry"] = None  # Lifetime
         
         result = self.users.update_one(
             {"user_id": user_id},
-            {"$set": update_data}
+            {"$set": update_data},
+            upsert=True
         )
-        return result.modified_count > 0
+        return result.modified_count > 0 or result.upserted_id is not None
+
+    def get_user_plan_id(self, user_id: int) -> str:
+        """Get user plan ID (handles expiry)"""
+        # Admins are always lifetime
+        if user_id in config.ADMIN_IDS:
+            return config.PlanTypes.LIFETIME
+            
+        user = self.get_user(user_id)
+        if not user:
+            return config.PlanTypes.FREE
+            
+        plan_type = user.get("plan_type", config.PlanTypes.FREE)
+        expiry = user.get("premium_expiry")
+        
+        # Check expiry if not FREE and not LIFETIME (though lifetime usually has far future expiry)
+        if plan_type != config.PlanTypes.FREE and plan_type != config.PlanTypes.LIFETIME:
+            if expiry:
+                if expiry.tzinfo is None:
+                    expiry = expiry.replace(tzinfo=pytz.UTC)
+                if datetime.now(pytz.UTC) > expiry:
+                    # Downgrade to free if expired
+                    self.users.update_one(
+                        {"user_id": user_id}, 
+                        {"$set": {"plan_type": config.PlanTypes.FREE, "is_premium": False}}
+                    )
+                    return config.PlanTypes.FREE
+                
+        return plan_type
+
+    def get_plan_details(self, user_id: int) -> dict:
+        """Get full plan configuration dict"""
+        plan_id = self.get_user_plan_id(user_id)
+        return config.PLANS.get(plan_id, config.PLANS[config.PlanTypes.FREE])
+
+    def increment_monthly_link_count(self, user_id: int) -> int:
+        """Increment link count, resetting if month changed"""
+        user = self.get_user(user_id)
+        if not user: return 0
+        
+        now = datetime.now(pytz.UTC)
+        
+        last_reset = user.get("last_link_reset")
+        if not last_reset:
+             # First time
+             self.users.update_one(
+                {"user_id": user_id},
+                {"$set": {"last_link_reset": now, "monthly_link_count": 1}}
+             )
+             return 1
+             
+        if last_reset.tzinfo is None:
+             last_reset = last_reset.replace(tzinfo=pytz.UTC)
+             
+        # Check if month changed
+        if now.month != last_reset.month or now.year != last_reset.year:
+            # Reset
+            self.users.update_one(
+                {"user_id": user_id},
+                {"$set": {"monthly_link_count": 1, "last_link_reset": now}}
+            )
+            return 1
+        else:
+            # Increment
+            self.users.update_one(
+                {"user_id": user_id},
+                {"$inc": {"monthly_link_count": 1}}
+            )
+            return user.get("monthly_link_count", 0) + 1
+
+    def check_monthly_limit(self, user_id: int) -> bool:
+        """Check if user can create more links this month"""
+        plan_id = self.get_user_plan_id(user_id)
+        plan = config.PLANS.get(plan_id, config.PLANS[config.PlanTypes.FREE])
+        limit = plan.get("max_active_links", 10)
+        
+        # Unlimited check
+        if limit > 99999: return True
+        
+        user = self.get_user(user_id)
+        if not user: return True
+        
+        # Check reset logic first (readonly check)
+        now = datetime.now(pytz.UTC)
+        last_reset = user.get("last_link_reset")
+        current_count = user.get("monthly_link_count", 0)
+        
+        if last_reset:
+             if last_reset.tzinfo is None: last_reset = last_reset.replace(tzinfo=pytz.UTC)
+             if now.month != last_reset.month or now.year != last_reset.year:
+                 current_count = 0 # Will be reset on next increment
+        
+        return current_count < limit
+
+    def is_user_premium(self, user_id: int) -> bool:
+        """Check if user has active premium (Legacy Compatibility)"""
+        return self.get_user_plan_id(user_id) != config.PlanTypes.FREE
+
+    def grant_premium(self, user_id: int, duration_days: int = None) -> bool:
+        """Grant premium (Legacy - Maps to closest plan)"""
+        if duration_days:
+            if duration_days <= 1: 
+                return self.set_user_plan(user_id, config.PlanTypes.DAILY)
+            elif duration_days <= 31: 
+                return self.set_user_plan(user_id, config.PlanTypes.MONTHLY)
+            elif duration_days <= 62: 
+                return self.set_user_plan(user_id, config.PlanTypes.BIMONTHLY)
+            else: 
+                return self.set_user_plan(user_id, config.PlanTypes.LIFETIME)
+        else:
+             return self.set_user_plan(user_id, config.PlanTypes.LIFETIME)
     
     def revoke_premium(self, user_id: int) -> bool:
         """Revoke premium from user"""
@@ -235,44 +339,64 @@ class Database:
         category: str = "🗂️ Others",
         expires_in_days: int = None
     ) -> Optional[str]:
-        """Create new link"""
+        """Create new link based on user plan"""
         
         user = self.get_user(admin_id)
-        if not user:
+        if not user: return None
+        
+        plan = self.get_plan_details(admin_id)
+        plan_id = self.get_user_plan_id(admin_id)
+        is_premium = plan_id != config.PlanTypes.FREE
+        
+        # Check Limits
+        
+        # 1. Active Links / Monthly Limit logic
+        # Handled by check_link_creation_limit or checked here?
+        # Let's re-verify monthly limit here just in case
+        if not self.check_monthly_limit(admin_id) and admin_id not in config.ADMIN_IDS:
             return None
-        
-        is_premium = self.is_user_premium(admin_id)
-        
-        # Check limits
-        if not is_premium:
-            # Free tier checks
-            active_links = self.get_user_active_links_count(admin_id)
-            if active_links >= config.FreeLimits.MAX_ACTIVE_LINKS:
-                return None
             
-            if len(files_data) > config.FreeLimits.MAX_FILES_PER_LINK:
-                return None
+        # 2. Files per link
+        max_files = plan.get("max_files_per_link", 20)
+        if max_files < 99999 and len(files_data) > max_files and admin_id not in config.ADMIN_IDS:
+            return None
             
-            # No password for free users
-            if password:
-                return None
-        
-        # Calculate total size
+        # 3. Password Check (Only premium features?)
+        # User didn't specify free users can't use password, but usually they can't.
+        # Assuming only premium for now as per previous logic.
+        if password and not is_premium and admin_id not in config.ADMIN_IDS:
+             return None
+             
+        # 4. Storage Check
         total_size = sum(f.get("file_size", 0) for f in files_data)
+        storage_limit = plan.get("storage_bytes", 50 * 1024 * 1024 * 1024)
         
-        # Check storage limit
-        max_storage = config.PremiumLimits.TOTAL_STORAGE_BYTES if is_premium else config.FreeLimits.TOTAL_STORAGE_BYTES
-        if user.get("storage_used", 0) + total_size > max_storage:
-            return None
-        
+        if admin_id not in config.ADMIN_IDS:
+            if storage_limit < 999999999999 and (user.get("storage_used", 0) + total_size) > storage_limit:
+                return None
+
         # Generate link
         link_id = self.generate_link_id()
         
         # Calculate expiry
-        if is_premium:
-            expires_at = None if not expires_in_days else datetime.now(pytz.UTC) + timedelta(days=expires_in_days)
+        # Plan expiry days
+        plan_expiry_days = plan.get("link_expiry_days", 60)
+        
+        # If expires_in_days provided (e.g. custom), use it, otherwise plan default
+        # But if plan has max limit, we should cap it? 
+        # User requirements say specific expiry per plan.
+        # "link expiry 6month" for daily plan.
+        
+        if expires_in_days:
+            expiry_delta = expires_in_days
         else:
-            expires_at = datetime.now(pytz.UTC) + timedelta(days=config.FreeLimits.LINK_EXPIRY_DAYS)
+            expiry_delta = plan_expiry_days
+            
+        # Lifetime check
+        if expiry_delta > 30000: # Approx 80 years
+             expires_at = None
+        else:
+             expires_at = datetime.now(pytz.UTC) + timedelta(days=expiry_delta)
         
         link_doc = {
             "link_id": link_id,
@@ -297,6 +421,10 @@ class Database:
         }
         
         self.links.insert_one(link_doc)
+        
+        # Increment Monthly Count
+        if admin_id not in config.ADMIN_IDS:
+             self.increment_monthly_link_count(admin_id)
         
         # Update user stats
         self.users.update_one(
@@ -400,6 +528,14 @@ class Database:
         if result.modified_count > 0:
             self.update_user_storage(link["admin_id"], -removed_size)
         
+        return result.modified_count > 0
+        
+    def update_link(self, link_id: str, updates: Dict) -> bool:
+        """Update link fields"""
+        result = self.links.update_one(
+            {"link_id": link_id},
+            {"$set": updates}
+        )
         return result.modified_count > 0
     
     def delete_link(self, link_id: str) -> bool:
@@ -533,7 +669,7 @@ class Database:
         self.referrals.insert_one({
             "referrer_id": referrer["user_id"],
             "referred_id": referred_id,
-            "status": "pending",
+            "status": "completed", # Auto-complete on join
             "reward_given": False,
             "created_at": datetime.now(pytz.UTC)
         })
@@ -548,8 +684,37 @@ class Database:
         return {
             "total_referrals": total,
             "completed_referrals": completed,
+            "completed_referrals": completed,
             "pending_referrals": total - completed
         }
+
+    def check_referral_milestones(self, referrer_id: int) -> tuple[bool, str, int]:
+        """Check and grant referral milestones (10, 30, 100)"""
+        referrer = self.get_user(referrer_id)
+        if not referrer: return False, "", 0
+        
+        total_refs = self.referrals.count_documents({"referrer_id": referrer_id, "status": "completed"})
+        claimed = referrer.get("referral_milestones", [])
+        if not isinstance(claimed, list): claimed = []
+        
+        milestones = [
+            (10, config.PlanTypes.MONTHLY, "Monthly Starter", 30),
+            (30, config.PlanTypes.BIMONTHLY, "Bi-Monthly Pro", 60),
+            (100, config.PlanTypes.YEARLY, "Yearly Premium", 365) 
+        ]
+        
+        for count, plan_type, display_name, days in milestones:
+            if total_refs >= count and count not in claimed:
+                self.set_user_plan(referrer_id, plan_type)
+                
+                self.users.update_one(
+                    {"user_id": referrer_id},
+                    {"$push": {"referral_milestones": count}}
+                )
+                
+                return True, display_name, days
+                
+        return False, "", 0
     
     # ==================== ADMIN STATS ====================
     
@@ -593,6 +758,58 @@ class Database:
             "total_views": total_views
         }
     
+    def get_user_stats(self, user_id: int) -> dict:
+        """Get comprehensive user statistics"""
+        try:
+            pipeline = [
+                {"$match": {"admin_id": user_id, "is_active": True}},
+                {
+                    "$group": {
+                        "_id": None,
+                        "total_links": {"$sum": 1},
+                        "total_files": {"$sum": {"$size": "$files"}},
+                        "total_storage": {"$sum": "$total_size"},
+                        "total_views": {"$sum": "$views"},
+                        "total_downloads": {"$sum": "$downloads"}
+                    }
+                }
+            ]
+            
+            result = list(self.links.aggregate(pipeline))
+            stats = {
+                "total_links": 0, "total_files": 0, "storage_used": 0,
+                "total_views": 0, "total_downloads": 0,
+                "category_breakdown": {}
+            }
+            
+            if result:
+                res = result[0]
+                stats.update({
+                    "total_links": res.get("total_links", 0),
+                    "total_files": res.get("total_files", 0),
+                    "storage_used": res.get("total_storage", 0),
+                    "total_views": res.get("total_views", 0),
+                    "total_downloads": res.get("total_downloads", 0)
+                })
+
+            # Category breakdown
+            cat_pipeline = [
+                {"$match": {"admin_id": user_id, "is_active": True}},
+                {"$group": {"_id": "$category", "count": {"$sum": 1}}}
+            ]
+            cats = list(self.links.aggregate(cat_pipeline))
+            stats["category_breakdown"] = {c["_id"]: c["count"] for c in cats}
+            
+            return stats
+            
+        except Exception as e:
+            # print(f"Stats Error: {e}") # Silent error
+            return {"total_links": 0, "total_files": 0, "storage_used": 0, "category_breakdown": {}}
+
+    def get_user_analytics(self, user_id: int) -> dict:
+        """Alias for get_user_stats"""
+        return self.get_user_stats(user_id)
+
     def close(self):
         """Close database connection"""
         if self.client:

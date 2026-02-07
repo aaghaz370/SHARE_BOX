@@ -36,6 +36,10 @@ def generate_qr_code(link: str, link_id: str, add_label: bool = True) -> BytesIO
     # Create image
     img = qr.make_image(fill_color="black", back_color="white")
     
+    # Extract PIL image if wrapper
+    if hasattr(img, "_img"):
+        img = img._img
+    
     # Add label if requested
     if add_label:
         img = add_label_to_qr(img, link_id)
@@ -112,6 +116,10 @@ def generate_fancy_qr_code(link: str, link_id: str) -> BytesIO:
     
     # Create colorful QR code
     img = qr.make_image(fill_color="#6C63FF", back_color="white")
+
+    # Extract PIL image if wrapper
+    if hasattr(img, "_img"):
+        img = img._img
     
     # Convert to RGB for further processing
     img = img.convert('RGB')

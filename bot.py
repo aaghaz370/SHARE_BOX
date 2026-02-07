@@ -22,16 +22,20 @@ from handlers.user import (
     start_command, help_command, getlink_command,
     detect_and_handle_link, unknown_command,
     stats_command, settings_command, referral_command,
-    upgrade_command
+    upgrade_command, skip_command, stop_command,
+    checklink_command
 )
 from handlers.admin import (
     upload_command, handle_file_upload, done_command,
     cancel_command, mylinks_command, delete_link_command,
     linkinfo_command, add_files_command, qrcode_command,
     ban_command, unban_command, admin_stats_command,
-    grant_premium_command, broadcast_command
+    grant_premium_command, broadcast_command, handle_dynamic_qr,
+    setpassword_command, setname_command, protect_command, search_command,
+    set_plan_command
 )
 from handlers.callbacks import handle_callback_query
+from handlers.edit_panel import edit_panel_command
 
 # Configure logging
 logging.basicConfig(
@@ -249,6 +253,11 @@ async def setup_bot_commands(application):
         BotCommand("settings", "⚙️ Bot settings"),
         BotCommand("referral", "🎁 Referral program"),
         BotCommand("upgrade", "💎 Get premium"),
+        BotCommand("qrcode", "📱 Generate QR Code"),
+        BotCommand("search", "🔍 Search Links"),
+        BotCommand("setname", "🏷️ Rename Link (Premium)"),
+        BotCommand("protect", "🛡️ Protect Content (Premium)"),
+        BotCommand("setpassword", "🔒 Set Password (Premium)"),
     ]
     
     # Set commands
@@ -295,6 +304,9 @@ def main():
     application.add_handler(CommandHandler("settings", settings_command))
     application.add_handler(CommandHandler("referral", referral_command))
     application.add_handler(CommandHandler("upgrade", upgrade_command))
+    application.add_handler(CommandHandler("skip", skip_command))
+    application.add_handler(CommandHandler("stop", stop_command))
+    application.add_handler(CommandHandler("checklink", checklink_command))
     
     # Upload/Link management commands
     application.add_handler(CommandHandler("upload", upload_command))
@@ -311,7 +323,15 @@ def main():
     application.add_handler(CommandHandler("unban", unban_command))
     application.add_handler(CommandHandler("adminstats", admin_stats_command))
     application.add_handler(CommandHandler("grantpremium", grant_premium_command))
+    application.add_handler(CommandHandler("grantpremium", grant_premium_command))
     application.add_handler(CommandHandler("broadcast", broadcast_command))
+    
+    # Premium Commands
+    application.add_handler(CommandHandler("setpassword", setpassword_command))
+    application.add_handler(CommandHandler("setname", setname_command))
+    application.add_handler(CommandHandler("protect", protect_command))
+    application.add_handler(CommandHandler("search", search_command))
+    application.add_handler(CommandHandler("edit", edit_panel_command))
     
     # File upload handler
     application.add_handler(
@@ -326,6 +346,14 @@ def main():
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
             detect_and_handle_link
+        )
+    )
+
+    # Dynamic QR handler
+    application.add_handler(
+        MessageHandler(
+            filters.Regex(r'^/qrcode_'),
+            handle_dynamic_qr
         )
     )
     
